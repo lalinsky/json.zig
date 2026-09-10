@@ -17,12 +17,15 @@ pub const EncodeOptions = struct {
     non_finite: enum { null_value, fail } = .null_value,
 };
 
-/// Thin wrapper handed to a type's custom `jsonWrite` function.
+/// Thin wrapper handed to a type's custom `jsonWrite` function. It carries the
+/// options the encode was started with, so a custom serializer that calls back
+/// into `write` honours them rather than silently reverting to the defaults.
 pub const Encoder = struct {
     writer: *Writer,
+    options: EncodeOptions = .{},
 
     pub fn write(self: Encoder, value: anytype) EncodeError!void {
-        return encodeValue(@TypeOf(value), value, self.writer, .{});
+        return encodeValue(@TypeOf(value), value, self.writer, self.options);
     }
 
     pub fn beginObject(self: Encoder) Writer.Error!void {
@@ -59,17 +62,17 @@ pub fn encodeValue(
     comptime T: type,
     value: T,
     w: *Writer,
-    comptime opts: EncodeOptions,
+    opts: EncodeOptions,
 ) EncodeError!void {
     if (comptime std.meta.hasFn(T, "jsonWrite")) {
-        return value.jsonWrite(Encoder{ .writer = w });
+        return value.jsonWrite(Encoder{ .writer = w, .options = opts });
     }
 
     switch (@typeInfo(T)) {
         .void, .null => try w.writeAll("null"),
         .bool => try w.writeAll(if (value) "true" else "false"),
         .int, .comptime_int => try writeInt(T, value, w),
-        .float, .comptime_float => try writeFloat(value, w, opts),
+        .float, .comptime_float => try writeFloat(T, value, w, opts),
         .optional => {
             if (value) |payload| return encodeValue(@TypeOf(payload), payload, w, opts);
             try w.writeAll("null");
@@ -100,7 +103,7 @@ pub fn encodeValue(
     }
 }
 
-fn encodeSlice(comptime Child: type, items: []const Child, w: *Writer, comptime opts: EncodeOptions) EncodeError!void {
+fn encodeSlice(comptime Child: type, items: []const Child, w: *Writer, opts: EncodeOptions) EncodeError!void {
     try w.writeByte('[');
     for (items, 0..) |item, i| {
         if (i != 0) try w.writeByte(',');
@@ -109,18 +112,44 @@ fn encodeSlice(comptime Child: type, items: []const Child, w: *Writer, comptime 
     try w.writeByte(']');
 }
 
-fn encodeUnion(comptime T: type, value: T, w: *Writer, comptime opts: EncodeOptions) EncodeError!void {
+fn encodeUnion(comptime T: type, value: T, w: *Writer, opts: EncodeOptions) EncodeError!void {
     const info = @typeInfo(T).@"union";
     if (info.tag_type == null) @compileError("json: cannot encode untagged union " ++ @typeName(T));
 
     try w.writeByte('{');
     switch (value) {
         inline else => |payload, tag| {
-            try w.writeAll("\"" ++ @tagName(tag) ++ "\":");
+            try w.writeAll(comptime "\"" ++ escapedLiteral(@tagName(tag)) ++ "\":");
             try encodeValue(@TypeOf(payload), payload, w, opts);
         },
     }
     try w.writeByte('}');
+}
+
+/// Escapes a comptime-known string for embedding between quotes. Field names
+/// and union tags are written as literals rather than through `writeString`,
+/// so they have to be escaped here or a name containing a quote, a backslash
+/// or a control character produces invalid JSON. Zig allows any bytes in an
+/// identifier via `@"..."`, so this applies to plain field names too, not only
+/// custom ones.
+pub fn escapedLiteral(comptime s: []const u8) []const u8 {
+    comptime {
+        var out: []const u8 = "";
+        for (s) |c| {
+            out = out ++ switch (c) {
+                '"' => "\\\"",
+                '\\' => "\\\\",
+                0x08 => "\\b",
+                0x0c => "\\f",
+                '\n' => "\\n",
+                '\r' => "\\r",
+                '\t' => "\\t",
+                0x00...0x07, 0x0b, 0x0e...0x1f => std.fmt.comptimePrint("\\u{x:0>4}", .{c}),
+                else => &[_]u8{c},
+            };
+        }
+        return out;
+    }
 }
 
 fn fieldKey(comptime T: type, comptime field_name: []const u8) []const u8 {
@@ -142,14 +171,14 @@ fn canOmitFields(comptime T: type) bool {
     return false;
 }
 
-fn encodeStruct(comptime T: type, value: T, w: *Writer, comptime opts: EncodeOptions) EncodeError!void {
+fn encodeStruct(comptime T: type, value: T, w: *Writer, opts: EncodeOptions) EncodeError!void {
     const fields = @typeInfo(T).@"struct".fields;
     const options = comptime json.structOptions(T);
 
     try w.writeByte('{');
     if (comptime !canOmitFields(T)) {
         inline for (fields, 0..) |f, i| {
-            const prefix = comptime (if (i == 0) "\"" else ",\"") ++ fieldKey(T, f.name) ++ "\":";
+            const prefix = comptime (if (i == 0) "\"" else ",\"") ++ escapedLiteral(fieldKey(T, f.name)) ++ "\":";
             try w.writeAll(prefix);
             try encodeValue(f.type, @field(value, f.name), w, opts);
         }
@@ -162,7 +191,7 @@ fn encodeStruct(comptime T: type, value: T, w: *Writer, comptime opts: EncodeOpt
             if (!omit) {
                 if (!first) try w.writeByte(',');
                 first = false;
-                try w.writeAll(comptime "\"" ++ fieldKey(T, f.name) ++ "\":");
+                try w.writeAll(comptime "\"" ++ escapedLiteral(fieldKey(T, f.name)) ++ "\":");
                 try encodeValue(f.type, @field(value, f.name), w, opts);
             }
         }
@@ -170,8 +199,13 @@ fn encodeStruct(comptime T: type, value: T, w: *Writer, comptime opts: EncodeOpt
     try w.writeByte('}');
 }
 
-fn writeFloat(value: anytype, w: *Writer, comptime opts: EncodeOptions) EncodeError!void {
-    const v: f64 = @floatCast(value);
+/// Formats at the value's own precision. Widening to f64 first would lose
+/// digits for f80/f128, and would turn a finite value that exceeds f64's range
+/// into an infinity - reported as `null` or an error for a number that is
+/// perfectly representable in its own type.
+fn writeFloat(comptime T: type, value: T, w: *Writer, opts: EncodeOptions) EncodeError!void {
+    const Float = if (T == comptime_float) f64 else T;
+    const v: Float = value;
     if (!std.math.isFinite(v)) {
         switch (opts.non_finite) {
             .null_value => return w.writeAll("null"),
@@ -179,10 +213,19 @@ fn writeFloat(value: anytype, w: *Writer, comptime opts: EncodeOptions) EncodeEr
         }
     }
     // Shortest representation that round-trips, via std's Ryu implementation.
-    // Calling `std.fmt.float.render` directly to skip the format-string
-    // machinery was measured and made no difference: the format string is
-    // comptime-known, so `print` already collapses to the same call.
-    try w.print("{}", .{v});
+    //
+    // This calls the renderer directly rather than going through
+    // `w.print("{}")`, which reaches `Writer.printFloat` - and that sizes its
+    // scratch buffer for f64 no matter what type it was handed, so a wide
+    // f80/f128 value silently renders as the literal text "(float)". Sizing
+    // the buffer for the actual type is what makes those types work at all.
+    // For f32 and f64 the bytes are identical either way.
+    var buf: [std.fmt.float.bufferSize(.decimal, Float)]u8 = undefined;
+    const rendered = std.fmt.float.render(&buf, v, .{ .mode = .decimal }) catch |err| switch (err) {
+        // `bufferSize` is defined as the capacity this mode and type need.
+        error.BufferTooSmall => unreachable,
+    };
+    try w.writeAll(rendered);
 }
 
 const digits2: [200]u8 = blk: {

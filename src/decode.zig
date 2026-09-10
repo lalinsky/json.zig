@@ -13,6 +13,7 @@ const std = @import("std");
 const Reader = std.Io.Reader;
 const Allocator = std.mem.Allocator;
 const json = @import("json.zig");
+const escapedLiteral = @import("encode.zig").escapedLiteral;
 
 pub const DecodeError = error{
     /// A byte appeared where the grammar does not allow it.
@@ -27,6 +28,9 @@ pub const DecodeError = error{
     /// A number longer than `max_number_len` bytes.
     NumberTooLong,
     InvalidEscape,
+    /// A byte below 0x20 appeared inside a string without being escaped, which
+    /// RFC 8259 forbids.
+    UnescapedControlCharacter,
     /// A `\uD800`-`\uDBFF` escape not followed by a low surrogate, or a lone
     /// low surrogate.
     InvalidSurrogatePair,
@@ -504,19 +508,23 @@ pub const Decoder = struct {
 
     // ------------------------------------------------------------ strings
 
-    /// Index of the first `"` or `\` in `window`, 16 bytes at a time.
+    /// Index of the first byte in `window` that ends a run of ordinary string
+    /// content - a quote, a backslash, or an unescaped control character - 16
+    /// bytes at a time.
     inline fn scanStringEnd(window: []const u8) ?usize {
         const V = @Vector(16, u8);
         const quote: V = @splat('"');
         const backslash: V = @splat('\\');
+        const space: V = @splat(0x20);
         var i: usize = 0;
         while (i + 16 <= window.len) : (i += 16) {
             const chunk: V = window[i..][0..16].*;
-            const hits: u16 = @bitCast((chunk == quote) | (chunk == backslash));
+            const hits: u16 = @bitCast((chunk == quote) | (chunk == backslash) | (chunk < space));
             if (hits != 0) return i + @ctz(hits);
         }
         while (i < window.len) : (i += 1) {
-            if (window[i] == '"' or window[i] == '\\') return i;
+            const c = window[i];
+            if (c == '"' or c == '\\' or c < 0x20) return i;
         }
         return null;
     }
@@ -537,6 +545,7 @@ pub const Decoder = struct {
                 r.seek += hit + 1;
                 return out;
             }
+            if (window[hit] < 0x20) return error.UnescapedControlCharacter;
         }
 
         var out: std.ArrayList(u8) = .empty;
@@ -545,9 +554,10 @@ pub const Decoder = struct {
         return out.toOwnedSlice(d.gpa);
     }
 
-    /// Appends the decoded contents of a string, up to and including its
-    /// closing quote, to `out`. Runs without escapes are appended whole.
-    fn stringBody(d: *Decoder, out: *std.ArrayList(u8)) DecodeError!void {
+    /// Consumes a string body up to and including its closing quote. Decoded
+    /// content is appended to `out`, or discarded when it is null, which is
+    /// what lets `skipValue` step over strings without allocating.
+    fn stringBody(d: *Decoder, out: ?*std.ArrayList(u8)) DecodeError!void {
         while (true) {
             const window = d.reader.buffered();
             if (window.len == 0) {
@@ -555,30 +565,33 @@ pub const Decoder = struct {
                 continue;
             }
             const hit = scanStringEnd(window) orelse {
-                try out.appendSlice(d.gpa, window);
+                if (out) |o| try o.appendSlice(d.gpa, window);
                 d.reader.toss(window.len);
                 d.reader.fillMore() catch |err| return mapRead(err);
                 continue;
             };
             const c = window[hit];
-            try out.appendSlice(d.gpa, window[0..hit]);
+            if (out) |o| try o.appendSlice(d.gpa, window[0..hit]);
             d.reader.toss(hit + 1);
             if (c == '"') return;
+            if (c < 0x20) return error.UnescapedControlCharacter;
             try d.escape(out);
         }
     }
 
-    fn escape(d: *Decoder, out: *std.ArrayList(u8)) DecodeError!void {
+    fn escape(d: *Decoder, out: ?*std.ArrayList(u8)) DecodeError!void {
         const c = d.reader.takeByte() catch |err| return mapRead(err);
+        var decoded: [4]u8 = undefined;
+        var len: usize = 1;
         switch (c) {
-            '"' => try out.append(d.gpa, '"'),
-            '\\' => try out.append(d.gpa, '\\'),
-            '/' => try out.append(d.gpa, '/'),
-            'b' => try out.append(d.gpa, 0x08),
-            'f' => try out.append(d.gpa, 0x0c),
-            'n' => try out.append(d.gpa, '\n'),
-            'r' => try out.append(d.gpa, '\r'),
-            't' => try out.append(d.gpa, '\t'),
+            '"' => decoded[0] = '"',
+            '\\' => decoded[0] = '\\',
+            '/' => decoded[0] = '/',
+            'b' => decoded[0] = 0x08,
+            'f' => decoded[0] = 0x0c,
+            'n' => decoded[0] = '\n',
+            'r' => decoded[0] = '\r',
+            't' => decoded[0] = '\t',
             'u' => {
                 const first = try d.hex4();
                 var code: u21 = first;
@@ -597,12 +610,11 @@ pub const Decoder = struct {
                 } else if (first >= 0xdc00 and first <= 0xdfff) {
                     return error.InvalidSurrogatePair;
                 }
-                var utf8: [4]u8 = undefined;
-                const n = std.unicode.utf8Encode(code, &utf8) catch return error.InvalidEscape;
-                try out.appendSlice(d.gpa, utf8[0..n]);
+                len = std.unicode.utf8Encode(code, &decoded) catch return error.InvalidEscape;
             },
             else => return error.InvalidEscape,
         }
+        if (out) |o| try o.appendSlice(d.gpa, decoded[0..len]);
     }
 
     fn hex4(d: *Decoder) DecodeError!u16 {
@@ -727,7 +739,7 @@ pub const Decoder = struct {
                 if (comptime fields.len > 0) {
                     switch (next_field) {
                         inline 0...(fields.len - 1) => |idx| {
-                            const token = comptime "\"" ++ jsonKey(T, fields[idx].name) ++ "\":";
+                            const token = comptime "\"" ++ escapedLiteral(jsonKey(T, fields[idx].name)) ++ "\":";
                             if (d.tryToken(token)) {
                                 @field(result, fields[idx].name) = try d.value(fields[idx].type);
                                 seen.set(idx);
@@ -806,6 +818,7 @@ pub const Decoder = struct {
                     @memcpy(buf[0..hit], window[0..hit]);
                     return buf[0..hit];
                 }
+                if (window[hit] < 0x20) return error.UnescapedControlCharacter;
             }
         }
 
@@ -834,6 +847,7 @@ pub const Decoder = struct {
             } else overflowed = true;
             d.reader.toss(hit + 1);
             if (c == '"') return if (overflowed) null else buf[0..len];
+            if (c < 0x20) return error.UnescapedControlCharacter;
 
             // An escape in a key is rare; decode it into the same bounded
             // buffer so that `"id"` still matches the field `id`.
@@ -848,38 +862,72 @@ pub const Decoder = struct {
     }
 
     /// Steps over one value of any shape, for unknown object members.
+    ///
+    /// This validates as it goes rather than counting brackets: a skipped
+    /// subtree has to be well-formed JSON, so `{"x":[}]` is rejected instead of
+    /// being waved through because the bracket counter happened to balance.
     fn skipValue(d: *Decoder) DecodeError!void {
-        var nesting: usize = 0;
-        while (true) {
-            switch (try d.peekByte()) {
-                '{', '[' => {
-                    d.reader.toss(1);
-                    nesting += 1;
-                    if (nesting > max_depth) return error.DepthLimitExceeded;
-                },
-                '}', ']' => {
-                    if (nesting == 0) return error.UnexpectedToken;
-                    d.reader.toss(1);
-                    nesting -= 1;
-                },
-                '"' => {
-                    d.reader.toss(1);
-                    var sink: std.ArrayList(u8) = .empty;
-                    defer sink.deinit(d.gpa);
-                    try d.stringBody(&sink);
-                },
-                ',', ':' => d.reader.toss(1),
-                't' => _ = try d.expectLiteralOrFail("true"),
-                'f' => _ = try d.expectLiteralOrFail("false"),
-                'n' => _ = try d.expectLiteralOrFail("null"),
-                '-', '0'...'9' => {
-                    var buf: [max_number_len]u8 = undefined;
-                    _ = try d.numberSpan(&buf);
-                },
-                else => return error.UnexpectedToken,
-            }
-            if (nesting == 0) return;
+        try d.pushDepth();
+        defer d.depth -= 1;
+
+        switch (try d.peekByte()) {
+            '{' => {
+                d.advance(1);
+                if (try d.peekByte() == '}') {
+                    d.advance(1);
+                    return;
+                }
+                while (true) {
+                    if (try d.peekByte() != '"') return error.UnexpectedToken;
+                    d.advance(1);
+                    try d.stringBody(null);
+                    try d.expectByte(':');
+                    try d.skipValue();
+                    switch (try d.peekByte()) {
+                        ',' => d.advance(1),
+                        '}' => {
+                            d.advance(1);
+                            return;
+                        },
+                        else => return error.UnexpectedToken,
+                    }
+                }
+            },
+            '[' => {
+                d.advance(1);
+                if (try d.peekByte() == ']') {
+                    d.advance(1);
+                    return;
+                }
+                while (true) {
+                    try d.skipValue();
+                    switch (try d.peekByte()) {
+                        ',' => d.advance(1),
+                        ']' => {
+                            d.advance(1);
+                            return;
+                        },
+                        else => return error.UnexpectedToken,
+                    }
+                }
+            },
+            '"' => {
+                d.advance(1);
+                try d.stringBody(null);
+            },
+            't' => try d.expectLiteralOrFail("true"),
+            'f' => try d.expectLiteralOrFail("false"),
+            'n' => try d.expectLiteralOrFail("null"),
+            '-', '0'...'9' => try d.skipNumber(),
+            else => return error.UnexpectedToken,
         }
+    }
+
+    /// Kept out of `skipValue` so its number buffer is not part of every
+    /// recursion frame.
+    fn skipNumber(d: *Decoder) DecodeError!void {
+        var buf: [max_number_len]u8 = undefined;
+        _ = try d.numberSpan(&buf);
     }
 
     fn expectLiteralOrFail(d: *Decoder, comptime lit: []const u8) DecodeError!void {

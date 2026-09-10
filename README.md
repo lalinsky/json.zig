@@ -174,9 +174,15 @@ formatting is about half of total encode time.
 ## Not supported
 
 Maps and dynamic documents (there is no `Value` type), untagged unions, and
-comments or trailing commas in input. Number syntax is validated by
-`std.fmt.parseFloat` rather than strictly against the JSON grammar, so some
-inputs JSON rejects — a leading `+`, a bare leading `.` — are accepted.
+comments or trailing commas in input.
+
+Input is not validated as UTF-8, and number syntax is checked by
+`std.fmt.parseFloat` rather than strictly against the JSON grammar, so a few
+inputs that JSON rejects — a leading `+`, a bare leading `.` — are accepted.
+
+Floats are written at their own precision, so an `f32` encodes as the shortest
+text that round-trips to that `f32`. `std.json` widens to `f64` first and so
+prints more digits for the same value.
 
 ## License
 

@@ -440,3 +440,132 @@ test "custom jsonWrite and jsonRead" {
     defer a.free(w.label);
     try testing.expectEqual(@as(f64, 3), w.at.y);
 }
+
+// ------------------------------------------------------------ review fixes
+
+test "skipped values must be well formed" {
+    const T = struct {
+        keep: u8,
+        pub fn jsonFormat() json.StructOptions {
+            return .{ .skip_unknown_fields = true };
+        }
+    };
+    const a = std.testing.allocator;
+    var arena: std.heap.ArenaAllocator = .init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Counting brackets alone would accept all of these.
+    const bad = [_][]const u8{
+        "{\"bad\":{\"x\":[}],\"keep\":1}",
+        "{\"bad\":[},\"keep\":1}",
+        "{\"bad\":{]},\"keep\":1}",
+        "{\"bad\":[1,,2],\"keep\":1}",
+        "{\"bad\":{\"a\" 1},\"keep\":1}",
+        "{\"bad\":{1:2},\"keep\":1}",
+        "{\"bad\":[1 2],\"keep\":1}",
+        "{\"bad\":{\"a\":},\"keep\":1}",
+    };
+    for (bad) |doc| {
+        try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky(T, alloc, doc));
+    }
+
+    // Well-formed skips still work, including nesting and escapes.
+    const good = try json.decodeFromSliceLeaky(
+        T,
+        alloc,
+        "{\"bad\":{\"x\":[1,{\"y\":[\"a\\\"b\",null,true]}]},\"keep\":7}",
+    );
+    try testing.expectEqual(@as(u8, 7), good.keep);
+}
+
+test "unescaped control characters are rejected" {
+    const a = std.testing.allocator;
+    var arena: std.heap.ArenaAllocator = .init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    try testing.expectError(error.UnescapedControlCharacter, json.decodeFromSliceLeaky([]const u8, alloc, "\"a\nb\""));
+    try testing.expectError(error.UnescapedControlCharacter, json.decodeFromSliceLeaky([]const u8, alloc, "\"a\x00b\""));
+    try testing.expectError(error.UnescapedControlCharacter, json.decodeFromSliceLeaky([]const u8, alloc, "\"a\tb\""));
+    try testing.expectError(error.UnescapedControlCharacter, json.decodeFromSliceLeaky([]const u8, alloc, "\"a\x1fb\""));
+    // 0x7f is not a C0 control character and stays legal.
+    const del = try json.decodeFromSliceLeaky([]const u8, alloc, "\"a\x7fb\"");
+    try testing.expectEqualStrings("a\x7fb", del);
+
+    // Also in keys, and past the 16-byte scan block.
+    const T = struct { @"0123456789abcdefghij": u8 };
+    try testing.expectError(error.UnescapedControlCharacter, json.decodeFromSliceLeaky(T, alloc, "{\"0123456789abcdefghij\nx\":1}"));
+    // And inside a value being skipped.
+    const S = struct {
+        keep: u8,
+        pub fn jsonFormat() json.StructOptions {
+            return .{ .skip_unknown_fields = true };
+        }
+    };
+    try testing.expectError(error.UnescapedControlCharacter, json.decodeFromSliceLeaky(S, alloc, "{\"bad\":\"a\nb\",\"keep\":1}"));
+}
+
+test "floats encode at their own precision" {
+    // f32 renders as an f32, not as the f64 it widens to.
+    try expectEncodes(@as(f32, 0.1), "0.1");
+    try expectEncodes(@as(f64, 0.1), "0.1");
+    try expectEncodes(@as(f16, 1.5), "1.5");
+
+    // Finite values outside f64's range must survive rather than become null
+    // or the literal text "(float)".
+    var buf: [512]u8 = undefined;
+    const wide = try encodeToBuf(@as(f128, 1e400), &buf);
+    try testing.expect(wide[0] == '1');
+    try testing.expect(std.mem.indexOf(u8, wide, "float") == null);
+    try testing.expectEqual(@as(f128, 1e400), try std.fmt.parseFloat(f128, wide));
+
+    const wide80 = try encodeToBuf(@as(f80, 1e400), &buf);
+    try testing.expectEqual(@as(f80, 1e400), try std.fmt.parseFloat(f80, wide80));
+}
+
+test "names baked into the output are escaped" {
+    const Quoted = struct {
+        a: u8,
+        pub fn jsonFormat() json.StructOptions {
+            return .{ .key = .custom };
+        }
+        pub fn jsonFieldName(comptime f: std.meta.FieldEnum(@This())) []const u8 {
+            return switch (f) {
+                .a => "a\"b\\c\nd",
+            };
+        }
+    };
+    try expectEncodes(Quoted{ .a = 1 }, "{\"a\\\"b\\\\c\\nd\":1}");
+
+    // A Zig field name can contain anything via @"...".
+    const Weird = struct { @"x\"y": u8 };
+    try expectEncodes(Weird{ .@"x\"y" = 2 }, "{\"x\\\"y\":2}");
+
+    const a = std.testing.allocator;
+    const back = try json.decodeFromSliceLeaky(Weird, a, "{\"x\\\"y\":2}");
+    try testing.expectEqual(@as(u8, 2), back.@"x\"y");
+
+    // Union tags too.
+    const U = union(enum) { @"t\"g": u8 };
+    try expectEncodes(U{ .@"t\"g" = 3 }, "{\"t\\\"g\":3}");
+}
+
+test "encode options reach custom serializers" {
+    const T = struct {
+        v: f64,
+        pub fn jsonWrite(self: @This(), encoder: json.Encoder) !void {
+            try encoder.write(self.v);
+        }
+    };
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try testing.expectError(
+        error.NonFiniteFloat,
+        json.encodeWithOptions(T{ .v = std.math.nan(f64) }, &w, .{ .non_finite = .fail }),
+    );
+
+    var w2: std.Io.Writer = .fixed(&buf);
+    try json.encodeWithOptions(T{ .v = std.math.nan(f64) }, &w2, .{ .non_finite = .null_value });
+    try testing.expectEqualStrings("null", w2.buffered());
+}

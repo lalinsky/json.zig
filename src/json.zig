@@ -54,7 +54,7 @@ pub fn encode(value: anytype, writer: *std.Io.Writer) EncodeError!void {
 pub fn encodeWithOptions(
     value: anytype,
     writer: *std.Io.Writer,
-    comptime options: EncodeOptions,
+    options: EncodeOptions,
 ) EncodeError!void {
     return encode_mod.encodeValue(@TypeOf(value), value, writer, options);
 }
