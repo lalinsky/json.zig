@@ -2,14 +2,7 @@
     .name = .json,
     .version = "0.1.0",
     .minimum_zig_version = "0.16.0",
-    .dependencies = .{
-        .json_test_suite = .{
-            .url = "https://github.com/nst/JSONTestSuite/archive/refs/heads/master.tar.gz",
-            .hash = "N-V-__8AACKCIQq5YBgot81O7KqoMbfczyMVV_SIjV4tIjXi",
-            // Only fetched by `zig build conformance`, never by `zig build test`.
-            .lazy = true,
-        },
-    },
+    .dependencies = .{},
     .fingerprint = 0x6b0725452a77e85c,
     .paths = .{
         "build.zig",

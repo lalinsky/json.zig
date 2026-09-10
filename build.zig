@@ -22,26 +22,25 @@ pub fn build(b: *std.Build) !void {
     test_step.dependOn(&run_tests.step);
 
     // JSONTestSuite (github.com/nst/JSONTestSuite), the conformance suite most
-    // JSON parsers are measured against. It is a lazy dependency, so a plain
-    // `zig build test` never fetches it.
+    // JSON parsers are measured against. Its cases are vendored under
+    // test/JSONTestSuite; see the README there for why.
+    const conformance = b.addExecutable(.{
+        .name = "conformance",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/conformance.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    conformance.root_module.addImport("json", json_module);
+
+    const options = b.addOptions();
+    options.addOptionPath("suite_path", b.path("test/JSONTestSuite/test_parsing"));
+    conformance.root_module.addOptions("build_options", options);
+
+    const run_conformance = b.addRunArtifact(conformance);
+    if (b.args) |args| run_conformance.addArgs(args);
+
     const conformance_step = b.step("conformance", "Run the JSONTestSuite conformance suite");
-    if (b.lazyDependency("json_test_suite", .{})) |suite| {
-        const options = b.addOptions();
-        options.addOptionPath("suite_path", suite.path("test_parsing"));
-
-        const conformance = b.addExecutable(.{
-            .name = "conformance",
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("test/conformance.zig"),
-                .target = target,
-                .optimize = optimize,
-            }),
-        });
-        conformance.root_module.addImport("json", json_module);
-        conformance.root_module.addOptions("build_options", options);
-
-        const run_conformance = b.addRunArtifact(conformance);
-        if (b.args) |args| run_conformance.addArgs(args);
-        conformance_step.dependOn(&run_conformance.step);
-    }
+    conformance_step.dependOn(&run_conformance.step);
 }

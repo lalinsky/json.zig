@@ -690,3 +690,78 @@ test "utf-8 is validated in keys and in skipped values" {
     const v = try json.decodeFromSliceLeaky(Accented, alloc, "{\"caf\xc3\xa9\":7}");
     try testing.expectEqual(@as(u8, 7), v.@"caf\u{e9}");
 }
+
+// -------------------------------------------------- manual encoder building
+
+/// A type that builds its JSON by hand rather than mirroring its fields,
+/// exercising the `Encoder` helpers a custom `jsonWrite` has to use.
+const Matrix = struct {
+    rows: usize,
+    cols: usize,
+    data: []const f64,
+
+    pub fn jsonWrite(self: Matrix, encoder: json.Encoder) !void {
+        try encoder.beginObject();
+        try encoder.writeKey("shape");
+        try encoder.beginArray();
+        try encoder.write(self.rows);
+        try encoder.comma();
+        try encoder.write(self.cols);
+        try encoder.endArray();
+        try encoder.comma();
+        try encoder.writeKey("data");
+        try encoder.write(self.data);
+        try encoder.comma();
+        try encoder.writeKey("note");
+        try encoder.writeStringValue("needs \"escaping\"");
+        try encoder.endObject();
+    }
+
+    pub fn jsonRead(decoder: *json.Decoder) !Matrix {
+        const Raw = struct { shape: [2]usize, data: []const f64, note: []const u8 };
+        const raw = try decoder.value(Raw);
+        return .{ .rows = raw.shape[0], .cols = raw.shape[1], .data = raw.data };
+    }
+};
+
+test "Encoder helpers build valid JSON" {
+    const m: Matrix = .{ .rows = 2, .cols = 3, .data = &.{ 1, 2.5, 3, 4, 5, 6 } };
+    try expectEncodes(
+        m,
+        "{\"shape\":[2,3],\"data\":[1,2.5,3,4,5,6],\"note\":\"needs \\\"escaping\\\"\"}",
+    );
+
+    // The hand-built output must be readable by std.json and by us.
+    const a = std.testing.allocator;
+    var buf: [256]u8 = undefined;
+    const encoded = try encodeToBuf(m, &buf);
+    try json.validateFromSlice(encoded);
+
+    var arena: std.heap.ArenaAllocator = .init(a);
+    defer arena.deinit();
+    const back = try json.decodeFromSliceLeaky(Matrix, arena.allocator(), encoded);
+    try testing.expectEqual(@as(usize, 2), back.rows);
+    try testing.expectEqual(@as(usize, 3), back.cols);
+    try testing.expectEqual(@as(f64, 2.5), back.data[1]);
+
+    const via_std = try std.json.parseFromSlice(std.json.Value, a, encoded, .{});
+    defer via_std.deinit();
+    try testing.expect(via_std.value == .object);
+}
+
+test "Encoder helpers carry options" {
+    const T = struct {
+        v: f64,
+        pub fn jsonWrite(self: @This(), encoder: json.Encoder) !void {
+            try encoder.beginArray();
+            try encoder.write(self.v);
+            try encoder.endArray();
+        }
+    };
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try testing.expectError(
+        error.NonFiniteFloat,
+        json.encodeWithOptions(T{ .v = std.math.inf(f64) }, &w, .{ .non_finite = .fail }),
+    );
+}

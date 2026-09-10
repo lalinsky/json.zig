@@ -209,7 +209,8 @@ invalid UTF-8, malformed `\u` surrogate pairs, UTF-16 input, byte-order marks,
 and nesting past its depth limit. It accepts numbers that overflow or underflow
 the destination type, which decode to infinity or zero.
 
-The suite is a lazy dependency, so a plain `zig build test` does not fetch it.
+Its cases are vendored under `test/JSONTestSuite`, so the run is offline and
+needs no network.
 
 [suite]: https://github.com/nst/JSONTestSuite
 
