@@ -597,3 +597,96 @@ test "validate rejects malformed documents" {
         } else |_| {}
     }
 }
+
+// ---------------------------------------------------------- utf-8 validation
+
+const invalid_utf8 = [_][]const u8{
+    "\"a\xc3\x28b\"", // bad continuation byte
+    "\"\x80\"", // lone continuation byte
+    "\"\xc0\xaf\"", // overlong two-byte form
+    "\"\xe0\x80\xaf\"", // overlong three-byte form
+    "\"\xed\xa0\x80\"", // surrogate encoded as UTF-8
+    "\"\xf4\x90\x80\x80\"", // beyond U+10FFFF
+    "\"\xf8\x88\x80\x80\x80\"", // five-byte form
+    "\"caf\xc3\"", // truncated at the closing quote
+    "\"\xe2\x82\"", // truncated three-byte sequence
+};
+
+const valid_utf8 = [_][]const u8{
+    "\"\"",
+    "\"plain ascii\"",
+    "\"caf\xc3\xa9\"",
+    "\"\xe2\x82\xac\"", // euro sign
+    "\"\xf0\x9f\x98\x80\"", // emoji, four bytes
+    "\"\x7f\"", // DEL is not a control character in JSON
+    "\"mixed \xc3\xa9 and \xf0\x9f\x98\x80 and ascii tail\"",
+    "\"\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80\"",
+};
+
+test "invalid utf-8 in strings is rejected" {
+    const a = std.testing.allocator;
+    var arena: std.heap.ArenaAllocator = .init(a);
+    defer arena.deinit();
+    for (invalid_utf8) |doc| {
+        try testing.expectError(error.InvalidUtf8, json.decodeFromSliceLeaky([]const u8, arena.allocator(), doc));
+        try testing.expectError(error.InvalidUtf8, json.validateFromSlice(doc));
+    }
+}
+
+test "valid utf-8 is accepted" {
+    const a = std.testing.allocator;
+    for (valid_utf8) |doc| {
+        try json.validateFromSlice(doc);
+        const s = try json.decodeFromSliceLeaky([]const u8, a, doc);
+        a.free(s);
+    }
+}
+
+test "utf-8 validation across reader fills" {
+    const a = std.testing.allocator;
+    // One byte per fill means every multi-byte sequence straddles a fill.
+    // Holding back a partial sequence rather than validating it is what keeps
+    // these from being wrongly rejected.
+    for (valid_utf8) |doc| {
+        for ([_]usize{ 8, 9, 16 }) |buffer_len| {
+            var buffer: [16]u8 = undefined;
+            var trickle = TrickleReader.init(buffer[0..buffer_len], doc);
+            var arena: std.heap.ArenaAllocator = .init(a);
+            defer arena.deinit();
+            const s = try json.decodeLeaky([]const u8, arena.allocator(), &trickle.reader);
+            try testing.expectEqualStrings(doc[1 .. doc.len - 1], s);
+        }
+    }
+    // And invalid input stays invalid however it is chopped up.
+    for (invalid_utf8) |doc| {
+        var buffer: [8]u8 = undefined;
+        var trickle = TrickleReader.init(&buffer, doc);
+        var arena: std.heap.ArenaAllocator = .init(a);
+        defer arena.deinit();
+        try testing.expectError(
+            error.InvalidUtf8,
+            json.decodeLeaky([]const u8, arena.allocator(), &trickle.reader),
+        );
+    }
+}
+
+test "utf-8 is validated in keys and in skipped values" {
+    const a = std.testing.allocator;
+    var arena: std.heap.ArenaAllocator = .init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const Skipping = struct {
+        keep: u8,
+        pub fn jsonFormat() json.StructOptions {
+            return .{ .skip_unknown_fields = true };
+        }
+    };
+    try testing.expectError(error.InvalidUtf8, json.decodeFromSliceLeaky(Skipping, alloc, "{\"a\xc3\x28\":1,\"keep\":2}"));
+    try testing.expectError(error.InvalidUtf8, json.decodeFromSliceLeaky(Skipping, alloc, "{\"other\":\"\xc0\xaf\",\"keep\":2}"));
+
+    // A valid non-ASCII key still matches its field.
+    const Accented = struct { @"caf\u{e9}": u8 };
+    const v = try json.decodeFromSliceLeaky(Accented, alloc, "{\"caf\xc3\xa9\":7}");
+    try testing.expectEqual(@as(u8, 7), v.@"caf\u{e9}");
+}

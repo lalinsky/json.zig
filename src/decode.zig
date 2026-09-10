@@ -31,6 +31,8 @@ pub const DecodeError = error{
     /// A byte below 0x20 appeared inside a string without being escaped, which
     /// RFC 8259 forbids.
     UnescapedControlCharacter,
+    /// A string contained bytes that are not valid UTF-8.
+    InvalidUtf8,
     /// A `\uD800`-`\uDBFF` escape not followed by a low surrogate, or a lone
     /// low surrogate.
     InvalidSurrogatePair,
@@ -561,25 +563,66 @@ pub const Decoder = struct {
 
     // ------------------------------------------------------------ strings
 
-    /// Index of the first byte in `window` that ends a run of ordinary string
-    /// content - a quote, a backslash, or an unescaped control character - 16
-    /// bytes at a time.
-    inline fn scanStringEnd(window: []const u8) ?usize {
+    const Scan = struct {
+        /// Index of the first byte that ends a run of ordinary string content:
+        /// a quote, a backslash, or an unescaped control character.
+        end: ?usize,
+        /// Whether any byte at or before `end` was non-ASCII. Over-reports at
+        /// most one block's worth, which only costs an unnecessary UTF-8 check.
+        non_ascii: bool,
+    };
+
+    /// Scans 16 bytes at a time. The non-ASCII flag rides along in the same
+    /// vector pass, so a pure-ASCII string - the common case - never pays for
+    /// UTF-8 validation at all.
+    inline fn scanStringEnd(window: []const u8) Scan {
         const V = @Vector(16, u8);
         const quote: V = @splat('"');
         const backslash: V = @splat('\\');
         const space: V = @splat(0x20);
+        // Non-ASCII is detected by OR-ing the bytes together and testing the
+        // high bit once at the end, rather than comparing each byte. That is
+        // branchless and costs one OR per byte or per block, which matters
+        // because short strings never reach the vector loop at all.
+        var acc: V = @splat(0);
         var i: usize = 0;
         while (i + 16 <= window.len) : (i += 16) {
             const chunk: V = window[i..][0..16].*;
+            acc |= chunk;
             const hits: u16 = @bitCast((chunk == quote) | (chunk == backslash) | (chunk < space));
-            if (hits != 0) return i + @ctz(hits);
+            if (hits != 0) return .{ .end = i + @ctz(hits), .non_ascii = @reduce(.Or, acc) >= 0x80 };
         }
+        var tail: u8 = @reduce(.Or, acc);
         while (i < window.len) : (i += 1) {
             const c = window[i];
-            if (c == '"' or c == '\\' or c < 0x20) return i;
+            tail |= c;
+            if (c == '"' or c == '\\' or c < 0x20) return .{ .end = i, .non_ascii = tail >= 0x80 };
         }
-        return null;
+        return .{ .end = null, .non_ascii = tail >= 0x80 };
+    }
+
+    inline fn checkUtf8(bytes: []const u8) DecodeError!void {
+        if (!std.unicode.utf8ValidateSlice(bytes)) return error.InvalidUtf8;
+    }
+
+    /// Number of bytes at the end of `bytes` that begin a UTF-8 sequence which
+    /// is not finished yet. A string can straddle a reader fill, so those
+    /// bytes are left unconsumed rather than being validated as a truncated
+    /// sequence and wrongly rejected.
+    fn trailingPartial(bytes: []const u8) usize {
+        var i: usize = bytes.len;
+        var back: usize = 0;
+        while (i > 0 and back < 4) {
+            i -= 1;
+            back += 1;
+            const b = bytes[i];
+            if (b < 0x80) return 0;
+            if (b >= 0xc0) {
+                const len = std.unicode.utf8ByteSequenceLength(b) catch return 0;
+                return if (back < len) back else 0;
+            }
+        }
+        return 0;
     }
 
     fn string(d: *Decoder) DecodeError![]u8 {
@@ -591,9 +634,11 @@ pub const Decoder = struct {
         // string costs several allocations.
         const r = d.reader;
         const window = r.buffer[r.seek..r.end];
-        if (scanStringEnd(window)) |hit| {
+        const scan = scanStringEnd(window);
+        if (scan.end) |hit| {
             if (window[hit] == '"') {
                 @branchHint(.likely);
+                if (scan.non_ascii) try checkUtf8(window[0..hit]);
                 const out = try d.gpa.dupe(u8, window[0..hit]);
                 r.seek += hit + 1;
                 return out;
@@ -617,13 +662,28 @@ pub const Decoder = struct {
                 d.reader.fillMore() catch |err| return mapRead(err);
                 continue;
             }
-            const hit = scanStringEnd(window) orelse {
-                if (out) |o| try o.appendSlice(d.gpa, window);
-                d.reader.toss(window.len);
+            const scan = scanStringEnd(window);
+            const hit = scan.end orelse {
+                // No delimiter yet. Consume all of it except a sequence that
+                // may continue into the next fill.
+                var take = window.len;
+                if (scan.non_ascii) {
+                    take -= trailingPartial(window);
+                    try checkUtf8(window[0..take]);
+                    if (take == 0) {
+                        d.reader.fillMore() catch |err| return mapRead(err);
+                        continue;
+                    }
+                }
+                if (out) |o| try o.appendSlice(d.gpa, window[0..take]);
+                d.reader.toss(take);
                 d.reader.fillMore() catch |err| return mapRead(err);
                 continue;
             };
             const c = window[hit];
+            // The run ends at an ASCII byte, so a sequence cannot straddle it:
+            // anything unfinished here is genuinely truncated.
+            if (scan.non_ascii) try checkUtf8(window[0..hit]);
             if (out) |o| try o.appendSlice(d.gpa, window[0..hit]);
             d.reader.toss(hit + 1);
             if (c == '"') return;
@@ -863,9 +923,11 @@ pub const Decoder = struct {
         {
             const r = d.reader;
             const window = r.buffer[r.seek..r.end];
-            if (scanStringEnd(window)) |hit| {
+            const scan = scanStringEnd(window);
+            if (scan.end) |hit| {
                 if (window[hit] == '"') {
                     @branchHint(.likely);
+                    if (scan.non_ascii) try checkUtf8(window[0..hit]);
                     r.seek += hit + 1;
                     if (hit > buf.len) return null;
                     @memcpy(buf[0..hit], window[0..hit]);
@@ -884,16 +946,27 @@ pub const Decoder = struct {
                 d.reader.fillMore() catch |err| return mapRead(err);
                 continue;
             }
-            const hit = scanStringEnd(window) orelse {
-                if (len + window.len <= buf.len) {
-                    @memcpy(buf[len..][0..window.len], window);
-                    len += window.len;
+            const scan = scanStringEnd(window);
+            const hit = scan.end orelse {
+                var take = window.len;
+                if (scan.non_ascii) {
+                    take -= trailingPartial(window);
+                    try checkUtf8(window[0..take]);
+                    if (take == 0) {
+                        d.reader.fillMore() catch |err| return mapRead(err);
+                        continue;
+                    }
+                }
+                if (len + take <= buf.len) {
+                    @memcpy(buf[len..][0..take], window[0..take]);
+                    len += take;
                 } else overflowed = true;
-                d.reader.toss(window.len);
+                d.reader.toss(take);
                 d.reader.fillMore() catch |err| return mapRead(err);
                 continue;
             };
             const c = window[hit];
+            if (scan.non_ascii) try checkUtf8(window[0..hit]);
             if (len + hit <= buf.len) {
                 @memcpy(buf[len..][0..hit], window[0..hit]);
                 len += hit;
