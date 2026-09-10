@@ -78,7 +78,7 @@ const pow10_f32 = [11]f32{ 1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e1
 /// provably enough - digits dropped, or mantissa/exponent too large - `value`
 /// is null and `len` still reports its extent, so the caller can convert it
 /// exactly without rescanning.
-fn fastFloat(comptime T: type, window: []const u8) ?struct { value: ?T, len: usize } {
+fn fastFloat(comptime T: type, window: []const u8) ?struct { value: ?T, len: usize, invalid: bool = false } {
     const limits = comptime clingerLimits(T).?;
     const table = comptime switch (T) {
         f64 => &pow10_f64,
@@ -107,7 +107,14 @@ fn fastFloat(comptime T: type, window: []const u8) ?struct { value: ?T, len: usi
             truncated = true;
         }
     }
-    var any_digits = i > int_start;
+    const int_digits = i - int_start;
+    var any_digits = int_digits > 0;
+    // Leading zeros are not legal JSON, and neither is a leading `+`.
+    if ((int_digits > 1 and window[int_start] == '0') or
+        (window.len > 0 and window[0] == '+'))
+    {
+        return .{ .value = null, .len = i, .invalid = true };
+    }
 
     if (i < window.len and window[i] == '.') {
         i += 1;
@@ -121,7 +128,9 @@ fn fastFloat(comptime T: type, window: []const u8) ?struct { value: ?T, len: usi
                 exp10 -= 1;
             } else truncated = true;
         }
-        any_digits = any_digits or i > frac_start;
+        // A fraction must have at least one digit.
+        if (i == frac_start) return .{ .value = null, .len = i, .invalid = true };
+        any_digits = true;
     }
     if (!any_digits) return null;
 
@@ -139,7 +148,7 @@ fn fastFloat(comptime T: type, window: []const u8) ?struct { value: ?T, len: usi
             if (digit > 9) break;
             if (e < 100_000) e = e * 10 + digit;
         }
-        if (i == exp_start) return null;
+        if (i == exp_start) return .{ .value = null, .len = i, .invalid = true };
         exp10 += if (exp_neg) -e else e;
     }
 
@@ -160,6 +169,46 @@ fn fastFloat(comptime T: type, window: []const u8) ?struct { value: ?T, len: usi
     else
         m / table[@intCast(-exp10)];
     return .{ .value = if (neg) -value else value, .len = i };
+}
+
+/// Checks `text` against RFC 8259's number grammar:
+///
+///     number = [ "-" ] int [ frac ] [ exp ]
+///     int    = "0" / ( digit1-9 *DIGIT )
+///     frac   = "." 1*DIGIT
+///     exp    = ("e" / "E") [ "-" / "+" ] 1*DIGIT
+///
+/// `std.fmt.parseFloat` is more permissive than this - it takes a leading `+`,
+/// a bare leading `.`, leading zeros - so the grammar has to be checked
+/// separately rather than inferred from a successful parse.
+fn validNumber(text: []const u8) bool {
+    var i: usize = 0;
+    if (i < text.len and text[i] == '-') i += 1;
+
+    // int: a single zero, or a nonzero digit followed by any digits.
+    if (i >= text.len) return false;
+    if (text[i] == '0') {
+        i += 1;
+    } else if (text[i] >= '1' and text[i] <= '9') {
+        while (i < text.len and text[i] >= '0' and text[i] <= '9') i += 1;
+    } else return false;
+
+    if (i < text.len and text[i] == '.') {
+        i += 1;
+        const start = i;
+        while (i < text.len and text[i] >= '0' and text[i] <= '9') i += 1;
+        if (i == start) return false;
+    }
+
+    if (i < text.len and (text[i] == 'e' or text[i] == 'E')) {
+        i += 1;
+        if (i < text.len and (text[i] == '-' or text[i] == '+')) i += 1;
+        const start = i;
+        while (i < text.len and text[i] >= '0' and text[i] <= '9') i += 1;
+        if (i == start) return false;
+    }
+
+    return i == text.len;
 }
 
 /// JSON numbers are unbounded in the grammar; this is the longest run of
@@ -425,6 +474,7 @@ pub const Decoder = struct {
             const ndigits = i - digits_start;
             if (i < window.len and ndigits > 0 and ndigits < 19) {
                 @branchHint(.likely);
+                if (ndigits > 1 and window[digits_start] == '0') return error.InvalidNumber;
                 switch (window[i]) {
                     // A number that continues is a float, not an integer.
                     '.', 'e', 'E', '+' => return error.InvalidNumber,
@@ -445,6 +495,7 @@ pub const Decoder = struct {
     fn intSlow(d: *Decoder, comptime T: type) DecodeError!T {
         var buf: [max_number_len]u8 = undefined;
         const text = try d.numberSpan(&buf);
+        if (!validNumber(text)) return error.InvalidNumber;
 
         var i: usize = 0;
         const neg = text[0] == '-';
@@ -484,6 +535,7 @@ pub const Decoder = struct {
             const r = d.reader;
             if (fastFloat(T, r.buffer[r.seek..r.end])) |hit| {
                 @branchHint(.likely);
+                if (hit.invalid) return error.InvalidNumber;
                 if (hit.value) |v| {
                     r.seek += hit.len;
                     return v;
@@ -503,6 +555,7 @@ pub const Decoder = struct {
     fn floatSlow(d: *Decoder, comptime T: type) DecodeError!T {
         var buf: [max_number_len]u8 = undefined;
         const text = try d.numberSpan(&buf);
+        if (!validNumber(text)) return error.InvalidNumber;
         return std.fmt.parseFloat(T, text) catch error.InvalidNumber;
     }
 
@@ -861,12 +914,13 @@ pub const Decoder = struct {
         }
     }
 
-    /// Steps over one value of any shape, for unknown object members.
+    /// Steps over one value of any shape, for unknown object members and for
+    /// `json.validate`.
     ///
     /// This validates as it goes rather than counting brackets: a skipped
     /// subtree has to be well-formed JSON, so `{"x":[}]` is rejected instead of
     /// being waved through because the bracket counter happened to balance.
-    fn skipValue(d: *Decoder) DecodeError!void {
+    pub fn skipValue(d: *Decoder) DecodeError!void {
         try d.pushDepth();
         defer d.depth -= 1;
 
@@ -927,7 +981,8 @@ pub const Decoder = struct {
     /// recursion frame.
     fn skipNumber(d: *Decoder) DecodeError!void {
         var buf: [max_number_len]u8 = undefined;
-        _ = try d.numberSpan(&buf);
+        const text = try d.numberSpan(&buf);
+        if (!validNumber(text)) return error.InvalidNumber;
     }
 
     fn expectLiteralOrFail(d: *Decoder, comptime lit: []const u8) DecodeError!void {

@@ -7,7 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `json.validate` and `json.validateFromSlice`, which check that input is one
+  well-formed JSON document without building anything from it and without
+  allocating
+- `zig build conformance`, running [JSONTestSuite][suite] as a lazy dependency;
+  all 95 must-accept and 188 must-reject cases pass
+
+[suite]: https://github.com/nst/JSONTestSuite
+
 ### Fixed
+- Numbers are checked against RFC 8259's grammar rather than being handed to
+  `std.fmt.parseFloat`, which is more permissive: `--1`, `01`, `+1`, `1.`, `1e`
+  and a bare leading `.` were all accepted
 - Skipped values are now parsed rather than bracket-counted, so a malformed
   subtree such as `{"x":[}]` behind `skip_unknown_fields` is rejected instead
   of being accepted

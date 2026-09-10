@@ -118,6 +118,36 @@ pub fn decodeLeaky(
     return value;
 }
 
+/// Checks that `reader` holds exactly one well-formed JSON document, without
+/// building anything from it. Useful on its own, and it is what lets the
+/// grammar be tested independently of any particular destination type.
+pub fn validate(reader: *std.Io.Reader) DecodeError!void {
+    var decoder: Decoder = .{ .reader = reader, .gpa = failing_allocator };
+    try decoder.skipValue();
+    try decoder.endOfDocument();
+}
+
+pub fn validateFromSlice(bytes: []const u8) DecodeError!void {
+    var reader: std.Io.Reader = .fixed(bytes);
+    return validate(&reader);
+}
+
+/// Validation never keeps anything, so it never needs to allocate. Handing it
+/// an allocator that always fails proves that, rather than asserting it.
+const failing_allocator = std.mem.Allocator{
+    .ptr = undefined,
+    .vtable = &.{
+        .alloc = struct {
+            fn f(_: *anyopaque, _: usize, _: std.mem.Alignment, _: usize) ?[*]u8 {
+                return null;
+            }
+        }.f,
+        .resize = std.mem.Allocator.noResize,
+        .remap = std.mem.Allocator.noRemap,
+        .free = std.mem.Allocator.noFree,
+    },
+};
+
 pub fn decodeFromSlice(
     comptime T: type,
     gpa: std.mem.Allocator,

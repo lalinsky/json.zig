@@ -569,3 +569,31 @@ test "encode options reach custom serializers" {
     try json.encodeWithOptions(T{ .v = std.math.nan(f64) }, &w2, .{ .non_finite = .null_value });
     try testing.expectEqualStrings("null", w2.buffered());
 }
+
+test "validate accepts well-formed documents and allocates nothing" {
+    const good = [_][]const u8{
+        "null",                  "true",
+        "0",                     "-1.5e3",
+        "\"\"",                  "\"a\\u00e9\\ud83d\\ude00\"",
+        "[]",                    "{}",
+        "[1,2,3]",               "{\"a\":{\"b\":[1,{\"c\":null}]}}",
+        " \t\r\n [ 1 , 2 ] \n ", "[[[[[[1]]]]]]",
+    };
+    for (good) |doc| try json.validateFromSlice(doc);
+}
+
+test "validate rejects malformed documents" {
+    const bad = [_][]const u8{
+        "",         "[",          "]",          "{",
+        "{}}",      "[1,]",       "{\"a\":1,}", "{\"a\"}",
+        "{a:1}",    "[}]",        "{\"x\":[}]", "tru",
+        "[1 2]",    "\"unclosed", "\"a\nb\"",   "1 2",
+        "{\"a\":}", "[,1]",       "nul",        "--1",
+    };
+    for (bad) |doc| {
+        if (json.validateFromSlice(doc)) {
+            std.debug.print("validate wrongly accepted: {s}\n", .{doc});
+            return error.AcceptedInvalidDocument;
+        } else |_| {}
+    }
+}

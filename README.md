@@ -85,6 +85,19 @@ The reader's buffer may be far smaller than the values being decoded. Strings,
 numbers and skipped values are all consumed incrementally, so a 1 MB string
 decodes fine through a 64-byte buffer. The buffer must hold at least 8 bytes.
 
+## Validating without decoding
+
+`json.validate` checks that a reader holds exactly one well-formed JSON
+document, without building anything from it:
+
+```zig
+try json.validate(&reader);
+try json.validateFromSlice(bytes);
+```
+
+It allocates nothing, and it accepts and rejects exactly what the decoder does,
+since it runs the same scanner, string, number and nesting code.
+
 ## Struct options
 
 By default a struct is an object keyed by field name, and optional fields that
@@ -176,13 +189,26 @@ formatting is about half of total encode time.
 Maps and dynamic documents (there is no `Value` type), untagged unions, and
 comments or trailing commas in input.
 
-Input is not validated as UTF-8, and number syntax is checked by
-`std.fmt.parseFloat` rather than strictly against the JSON grammar, so a few
-inputs that JSON rejects — a leading `+`, a bare leading `.` — are accepted.
+Input is not validated as UTF-8: byte sequences that are not valid UTF-8 pass
+through into decoded strings unchanged. Nesting deeper than 256 levels is
+rejected.
 
 Floats are written at their own precision, so an `f32` encodes as the shortest
 text that round-trips to that `f32`. `std.json` widens to `f64` first and so
 prints more digits for the same value.
+
+## Conformance
+
+`zig build conformance` runs [JSONTestSuite][suite], the standard suite for
+RFC 8259 parsers. All 95 must-accept and 188 must-reject cases pass. Of the 35
+cases the suite leaves implementation-defined, this library rejects malformed
+`\u` surrogate pairs, UTF-16 input, byte-order marks and nesting past its depth
+limit, and accepts numbers that overflow or underflow the destination type as
+well as strings holding invalid UTF-8.
+
+The suite is a lazy dependency, so a plain `zig build test` does not fetch it.
+
+[suite]: https://github.com/nst/JSONTestSuite
 
 ## License
 
