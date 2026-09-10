@@ -16,6 +16,9 @@ Initial release.
   arrays, structs, optionals, enums, tagged unions and `void`
 - `jsonFormat` struct options: `field_name` or `custom` keys,
   `skip_unknown_fields`, and `omit_null_fields`
+- Two union encodings, selected with `jsonFormat`: a one-member object keyed by
+  the variant name, or `as_tagged`, which hoists the variant's fields next to a
+  tag field
 - `jsonWrite` and `jsonRead` hooks for types that define their own format
 - Values larger than the reader's buffer decode incrementally, so strings,
   numbers and skipped values are not limited by the buffer size

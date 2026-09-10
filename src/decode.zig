@@ -43,8 +43,12 @@ pub const DecodeError = error{
     MissingField,
     /// Nesting deeper than `max_depth`.
     DepthLimitExceeded,
-    /// A string did not name any tag of the destination enum or union.
+    /// A string did not name any tag of the destination enum.
     InvalidEnumTag,
+    /// An object did not name any variant of the destination union.
+    UnknownUnionVariant,
+    /// An `as_tagged` union object did not start with its tag field.
+    MissingUnionTag,
     ReadFailed,
     OutOfMemory,
 };
@@ -811,35 +815,113 @@ pub const Decoder = struct {
         try d.pushDepth();
         defer d.depth -= 1;
 
-        var buf: [maxTagLen(T)]u8 = undefined;
-        const name = (try d.boundedString(&buf)) orelse return error.InvalidEnumTag;
-        try d.expectByte(':');
+        switch (comptime json.unionFormat(T)) {
+            .as_object => {
+                var buf: [maxTagLen(T)]u8 = undefined;
+                const name = (try d.boundedString(&buf)) orelse return error.UnknownUnionVariant;
+                try d.expectByte(':');
 
-        var result: ?T = null;
-        inline for (info.fields) |f| {
-            if (result == null and name.len == f.name.len and std.mem.eql(u8, name, f.name)) {
-                result = @unionInit(T, f.name, try d.value(f.type));
-            }
+                var result: ?T = null;
+                inline for (info.fields) |f| {
+                    if (result == null and name.len == f.name.len and std.mem.eql(u8, name, f.name)) {
+                        result = @unionInit(T, f.name, try d.value(f.type));
+                    }
+                }
+                // Report the unknown variant before looking for `}`; nothing
+                // consumed the value, so the object is not where `}` would be.
+                if (result == null) return error.UnknownUnionVariant;
+                try d.expectByte('}');
+                return result.?;
+            },
+            .as_tagged => |tagged| {
+                // The tag has to come first; see `UnionFormat.as_tagged`.
+                var key_buf: [tagged.tag_field.len]u8 = undefined;
+                const key = (try d.boundedString(&key_buf)) orelse return error.MissingUnionTag;
+                if (!std.mem.eql(u8, key, tagged.tag_field)) return error.MissingUnionTag;
+                try d.expectByte(':');
+
+                var name_buf: [maxTagLen(T)]u8 = undefined;
+                const name = (try d.boundedString(&name_buf)) orelse return error.UnknownUnionVariant;
+
+                var result: ?T = null;
+                inline for (info.fields) |f| {
+                    if (result == null and name.len == f.name.len and std.mem.eql(u8, name, f.name)) {
+                        if (f.type == void) {
+                            // Nothing to hoist, so run the member loop over an
+                            // empty struct: any remaining member is an unknown
+                            // field, and honours skip_unknown_fields.
+                            const Empty = struct {};
+                            const empty_options = comptime blk: {
+                                var o = json.default_struct_options;
+                                o.skip_unknown_fields = tagged.skip_unknown_fields;
+                                break :blk o;
+                            };
+                            _ = try d.objectMembers(Empty, empty_options, true);
+                            result = @unionInit(T, f.name, {});
+                        } else if (@typeInfo(f.type) == .@"struct") {
+                            // The union's own skip_unknown_fields governs the
+                            // flattened object, on top of whatever the payload
+                            // struct asks for.
+                            const payload_options = comptime blk: {
+                                var o = json.structOptions(f.type);
+                                o.skip_unknown_fields = o.skip_unknown_fields or tagged.skip_unknown_fields;
+                                break :blk o;
+                            };
+                            result = @unionInit(T, f.name, try d.objectMembers(f.type, payload_options, true));
+                        } else {
+                            @compileError("json: as_tagged needs a struct or void payload, but " ++
+                                @typeName(T) ++ "." ++ f.name ++ " is " ++ @typeName(f.type));
+                        }
+                    }
+                }
+                return result orelse error.UnknownUnionVariant;
+            },
         }
-        if (result == null) return error.InvalidEnumTag;
-        try d.expectByte('}');
-        return result.?;
     }
 
     fn object(d: *Decoder, comptime T: type) DecodeError!T {
-        const fields = @typeInfo(T).@"struct".fields;
-        const options = comptime json.structOptions(T);
-
         try d.expectByte('{');
         try d.pushDepth();
         defer d.depth -= 1;
+        return d.objectMembers(T, comptime json.structOptions(T), false);
+    }
+
+    /// Decodes object members into `T`, from the current position through the
+    /// closing `}`.
+    ///
+    /// `continuing` says the caller has already consumed a member of this
+    /// object, so a separator has to come first. That is what lets a flattened
+    /// tagged union read its tag and then hand the rest of the object here.
+    fn objectMembers(
+        d: *Decoder,
+        comptime T: type,
+        comptime options: json.StructOptions,
+        comptime continuing: bool,
+    ) DecodeError!T {
+        const fields = @typeInfo(T).@"struct".fields;
 
         var result: T = undefined;
         var seen = std.bit_set.StaticBitSet(fields.len).initEmpty();
 
-        if (try d.peekByte() == '}') {
-            d.advance(1);
-        } else {
+        const has_members = if (continuing) switch (try d.peekByte()) {
+            ',' => blk: {
+                d.advance(1);
+                break :blk true;
+            },
+            '}' => blk: {
+                d.advance(1);
+                break :blk false;
+            },
+            else => return error.UnexpectedToken,
+        } else blk: {
+            if (try d.peekByte() == '}') {
+                d.advance(1);
+                break :blk false;
+            }
+            break :blk true;
+        };
+
+        if (has_members) {
             // Producers emit fields in a stable order, so the next member is
             // almost always the next field. Its whole key token - quote, name,
             // quote, colon - is comptime-known, so try matching it outright

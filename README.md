@@ -134,6 +134,37 @@ instead of failing with `error.UnknownField`. It lets a consumer read documents
 from a newer producer that added fields. Missing fields are already accepted
 without any option, as long as they have a default value or are optional.
 
+## Union formats
+
+A tagged union is encoded as a one-member object keyed by the variant name:
+
+```json
+{"circle":{"radius":2.5}}
+```
+
+Declaring `jsonFormat` switches it to the flattened form, where the variant's
+own fields sit next to a tag field:
+
+```zig
+const Shape = union(enum) {
+    circle: struct { radius: f64 },
+    rect: struct { w: u32, h: u32 },
+
+    pub fn jsonFormat() json.UnionFormat {
+        return .{ .as_tagged = .{ .tag_field = "type", .skip_unknown_fields = false } };
+    }
+};
+```
+
+```json
+{"type":"circle","radius":2.5}
+```
+
+`as_tagged` needs every variant to carry a struct or `void`, since there is
+nothing to hoist otherwise, and the tag must be the object's **first** member.
+Anything else would mean buffering the whole object before knowing which
+variant to build, which a streaming decoder cannot do.
+
 ## Custom formats
 
 A type can take over its own encoding entirely:
@@ -166,7 +197,7 @@ const Point = struct {
 | structs | object |
 | `?T` | `null`, or the encoding of `T` |
 | enums | string naming the tag |
-| tagged unions | one-member object, `{"tag":payload}` |
+| tagged unions | one-member object, or flattened — see below |
 | `void` | `null` |
 
 Encoding a NaN or infinity as `null` matches what JavaScript's

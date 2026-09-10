@@ -44,6 +44,38 @@ pub fn structOptions(comptime T: type) StructOptions {
     return if (std.meta.hasFn(T, "jsonFormat")) T.jsonFormat() else default_struct_options;
 }
 
+/// How a tagged union maps onto an object. A union picks one by declaring
+/// `pub fn jsonFormat() json.UnionFormat`.
+pub const UnionFormat = union(enum) {
+    /// `{"circle":2.5}` — a one-member object keyed by the variant name.
+    /// Works with any payload type, and is the default.
+    as_object: AsObject,
+    /// `{"type":"circle","radius":2.5}` — the variant's own fields hoisted to
+    /// the top level next to a tag field. The payload must be a struct or
+    /// `void`, since there is nothing to hoist otherwise.
+    ///
+    /// The tag must be the object's *first* member. Anything else would mean
+    /// buffering the whole object before knowing which variant to build, which
+    /// a streaming decoder cannot do.
+    as_tagged: AsTagged,
+
+    pub const AsObject = struct {};
+
+    pub const AsTagged = struct {
+        /// Key holding the variant name.
+        tag_field: []const u8 = "type",
+        /// Step over members that match neither the tag nor a field of the
+        /// selected variant. See `StructOptions.skip_unknown_fields`.
+        skip_unknown_fields: bool = false,
+    };
+};
+
+pub const default_union_format: UnionFormat = .{ .as_object = .{} };
+
+pub fn unionFormat(comptime T: type) UnionFormat {
+    return if (std.meta.hasFn(T, "jsonFormat")) T.jsonFormat() else default_union_format;
+}
+
 // ---------------------------------------------------------------- encoding
 
 /// Writes `value` as JSON. No whitespace is emitted.

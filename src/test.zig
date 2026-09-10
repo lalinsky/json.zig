@@ -765,3 +765,143 @@ test "Encoder helpers carry options" {
         json.encodeWithOptions(T{ .v = std.math.inf(f64) }, &w, .{ .non_finite = .fail }),
     );
 }
+
+// ------------------------------------------------------------ union formats
+
+const Circle = struct { radius: f64 };
+const Rect = struct { w: u32, h: u32, label: ?[]const u8 = null };
+
+/// Default: a one-member object keyed by the variant name.
+const ShapeObject = union(enum) {
+    circle: Circle,
+    rect: Rect,
+    scalar: f64,
+    nothing: void,
+};
+
+/// Flattened: the variant's fields hoisted next to a tag field.
+const ShapeTagged = union(enum) {
+    circle: Circle,
+    rect: Rect,
+    nothing: void,
+
+    pub fn jsonFormat() json.UnionFormat {
+        return .{ .as_tagged = .{} };
+    }
+};
+
+/// Same, with the tag field renamed and unknown members tolerated.
+const Event = union(enum) {
+    click: struct { x: i32, y: i32 },
+    key: struct { code: u8 },
+
+    pub fn jsonFormat() json.UnionFormat {
+        return .{ .as_tagged = .{ .tag_field = "kind", .skip_unknown_fields = true } };
+    }
+};
+
+test "unions as a one-member object" {
+    const a = std.testing.allocator;
+    var arena: std.heap.ArenaAllocator = .init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    try expectEncodes(ShapeObject{ .circle = .{ .radius = 2.5 } }, "{\"circle\":{\"radius\":2.5}}");
+    try expectEncodes(ShapeObject{ .scalar = 1.5 }, "{\"scalar\":1.5}");
+    try expectEncodes(ShapeObject{ .nothing = {} }, "{\"nothing\":null}");
+
+    const c = try json.decodeFromSliceLeaky(ShapeObject, alloc, "{\"circle\":{\"radius\":2.5}}");
+    try testing.expectEqual(@as(f64, 2.5), c.circle.radius);
+    const n = try json.decodeFromSliceLeaky(ShapeObject, alloc, "{\"nothing\":null}");
+    try testing.expectEqual(ShapeObject.nothing, n);
+
+    try testing.expectError(error.UnknownUnionVariant, json.decodeFromSliceLeaky(ShapeObject, alloc, "{\"nope\":1}"));
+}
+
+test "unions as a flattened tagged object" {
+    const a = std.testing.allocator;
+    var arena: std.heap.ArenaAllocator = .init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    try expectEncodes(ShapeTagged{ .circle = .{ .radius = 2.5 } }, "{\"type\":\"circle\",\"radius\":2.5}");
+    try expectEncodes(
+        ShapeTagged{ .rect = .{ .w = 3, .h = 4, .label = "box" } },
+        "{\"type\":\"rect\",\"w\":3,\"h\":4,\"label\":\"box\"}",
+    );
+    // A null optional in the payload is still omitted.
+    try expectEncodes(ShapeTagged{ .rect = .{ .w = 3, .h = 4 } }, "{\"type\":\"rect\",\"w\":3,\"h\":4}");
+    // A void variant has nothing to hoist.
+    try expectEncodes(ShapeTagged{ .nothing = {} }, "{\"type\":\"nothing\"}");
+
+    const r = try json.decodeFromSliceLeaky(ShapeTagged, alloc, "{\"type\":\"rect\",\"w\":3,\"h\":4,\"label\":\"box\"}");
+    try testing.expectEqual(@as(u32, 3), r.rect.w);
+    try testing.expectEqualStrings("box", r.rect.label.?);
+
+    // Payload field left out, filled from its default.
+    const r2 = try json.decodeFromSliceLeaky(ShapeTagged, alloc, "{\"type\":\"rect\",\"w\":1,\"h\":2}");
+    try testing.expectEqual(@as(?[]const u8, null), r2.rect.label);
+
+    const n = try json.decodeFromSliceLeaky(ShapeTagged, alloc, "{\"type\":\"nothing\"}");
+    try testing.expectEqual(ShapeTagged.nothing, n);
+
+    // Round trip through both directions.
+    for ([_]ShapeTagged{
+        .{ .circle = .{ .radius = 0.5 } },
+        .{ .rect = .{ .w = 7, .h = 8, .label = "l" } },
+        .{ .nothing = {} },
+    }) |v| {
+        var buf: [128]u8 = undefined;
+        const encoded = try encodeToBuf(v, &buf);
+        try json.validateFromSlice(encoded);
+        const back = try json.decodeFromSliceLeaky(ShapeTagged, alloc, encoded);
+        try testing.expectEqual(std.meta.activeTag(v), std.meta.activeTag(back));
+    }
+}
+
+test "as_tagged rejects a missing or misplaced tag" {
+    const a = std.testing.allocator;
+    var arena: std.heap.ArenaAllocator = .init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The tag has to be the first member; a streaming decoder cannot go back.
+    try testing.expectError(error.MissingUnionTag, json.decodeFromSliceLeaky(ShapeTagged, alloc, "{\"radius\":2.5,\"type\":\"circle\"}"));
+    try testing.expectError(error.MissingUnionTag, json.decodeFromSliceLeaky(ShapeTagged, alloc, "{\"w\":1}"));
+    try testing.expectError(error.UnknownUnionVariant, json.decodeFromSliceLeaky(ShapeTagged, alloc, "{\"type\":\"hexagon\"}"));
+    // A void variant carrying fields is not that variant.
+    try testing.expectError(error.UnknownField, json.decodeFromSliceLeaky(ShapeTagged, alloc, "{\"type\":\"nothing\",\"x\":1}"));
+}
+
+test "as_tagged with a renamed tag field and unknown members" {
+    const a = std.testing.allocator;
+    var arena: std.heap.ArenaAllocator = .init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    try expectEncodes(Event{ .click = .{ .x = 1, .y = 2 } }, "{\"kind\":\"click\",\"x\":1,\"y\":2}");
+
+    const e = try json.decodeFromSliceLeaky(Event, alloc, "{\"kind\":\"click\",\"x\":1,\"extra\":{\"a\":[1,2]},\"y\":2}");
+    try testing.expectEqual(@as(i32, 1), e.click.x);
+    try testing.expectEqual(@as(i32, 2), e.click.y);
+
+    // Nested inside a struct, and inside a slice.
+    const Wrapper = struct { events: []const Event };
+    const w = try json.decodeFromSliceLeaky(Wrapper, alloc, "{\"events\":[{\"kind\":\"click\",\"x\":1,\"y\":2},{\"kind\":\"key\",\"code\":65}]}");
+    try testing.expectEqual(@as(usize, 2), w.events.len);
+    try testing.expectEqual(@as(u8, 65), w.events[1].key.code);
+}
+
+test "as_tagged through a trickling reader" {
+    const a = std.testing.allocator;
+    const doc = "{\"type\":\"rect\",\"w\":30000,\"h\":40000,\"label\":\"a longer label \\u00e9\"}";
+    for ([_]usize{ 8, 16, 64 }) |buffer_len| {
+        var buffer: [64]u8 = undefined;
+        var trickle = TrickleReader.init(buffer[0..buffer_len], doc);
+        var arena: std.heap.ArenaAllocator = .init(a);
+        defer arena.deinit();
+        const v = try json.decodeLeaky(ShapeTagged, arena.allocator(), &trickle.reader);
+        try testing.expectEqual(@as(u32, 30000), v.rect.w);
+        try testing.expectEqualStrings("a longer label \u{e9}", v.rect.label.?);
+    }
+}

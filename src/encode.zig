@@ -116,14 +116,50 @@ fn encodeUnion(comptime T: type, value: T, w: *Writer, opts: EncodeOptions) Enco
     const info = @typeInfo(T).@"union";
     if (info.tag_type == null) @compileError("json: cannot encode untagged union " ++ @typeName(T));
 
-    try w.writeByte('{');
-    switch (value) {
-        inline else => |payload, tag| {
-            try w.writeAll(comptime "\"" ++ escapedLiteral(@tagName(tag)) ++ "\":");
-            try encodeValue(@TypeOf(payload), payload, w, opts);
+    switch (comptime json.unionFormat(T)) {
+        .as_object => {
+            try w.writeByte('{');
+            switch (value) {
+                inline else => |payload, tag| {
+                    try w.writeAll(comptime "\"" ++ escapedLiteral(@tagName(tag)) ++ "\":");
+                    try encodeValue(@TypeOf(payload), payload, w, opts);
+                },
+            }
+            try w.writeByte('}');
+        },
+        .as_tagged => |tagged| {
+            switch (value) {
+                inline else => |payload, tag| {
+                    const Payload = @TypeOf(payload);
+                    if (Payload != void and @typeInfo(Payload) != .@"struct") {
+                        @compileError("json: as_tagged needs a struct or void payload, but " ++
+                            @typeName(T) ++ "." ++ @tagName(tag) ++ " is " ++ @typeName(Payload));
+                    }
+                    try w.writeAll(comptime "{\"" ++ escapedLiteral(tagged.tag_field) ++
+                        "\":\"" ++ escapedLiteral(@tagName(tag)) ++ "\"");
+                    // The tag is always present, so every hoisted field is
+                    // preceded by a comma - no first-member bookkeeping.
+                    if (Payload != void) try encodeStructFieldsAfter(Payload, payload, w, opts);
+                    try w.writeByte('}');
+                },
+            }
         },
     }
-    try w.writeByte('}');
+}
+
+/// Writes a struct's members as `,"name":value`, for an object that already
+/// has at least one member.
+fn encodeStructFieldsAfter(comptime T: type, value: T, w: *Writer, opts: EncodeOptions) EncodeError!void {
+    const options = comptime json.structOptions(T);
+    inline for (@typeInfo(T).@"struct".fields) |f| {
+        const omit = options.omit_null_fields and
+            @typeInfo(f.type) == .optional and
+            @field(value, f.name) == null;
+        if (!omit) {
+            try w.writeAll(comptime ",\"" ++ escapedLiteral(fieldKey(T, f.name)) ++ "\":");
+            try encodeValue(f.type, @field(value, f.name), w, opts);
+        }
+    }
 }
 
 /// Escapes a comptime-known string for embedding between quotes. Field names
