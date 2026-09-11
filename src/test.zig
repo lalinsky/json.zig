@@ -905,3 +905,29 @@ test "as_tagged through a trickling reader" {
         try testing.expectEqualStrings("a longer label \u{e9}", v.rect.label.?);
     }
 }
+
+test "integers too long for the fast path do not overflow" {
+    const a = std.testing.allocator;
+    var arena: std.heap.ArenaAllocator = .init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // 20+ digits cannot fit the fast path's u64 accumulator. Accumulating them
+    // anyway panicked in a safe build and was illegal behaviour in a fast one.
+    try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky(u64, alloc, "99999999999999999999"));
+    try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky(i64, alloc, "-99999999999999999999"));
+    try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky(u8, alloc, "123456789012345678901234567890"));
+
+    // Wide enough destinations still decode exactly.
+    try testing.expectEqual(@as(u128, 99999999999999999999), try json.decodeFromSliceLeaky(u128, alloc, "99999999999999999999"));
+    try testing.expectEqual(@as(i128, -99999999999999999999), try json.decodeFromSliceLeaky(i128, alloc, "-99999999999999999999"));
+
+    // Reached through a struct and an array, where a terminator follows.
+    const S = struct { n: u64 };
+    try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky(S, alloc, "{\"n\":99999999999999999999}"));
+    try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky([]const u64, alloc, "[1,99999999999999999999]"));
+
+    // And the boundary either side of 19 digits stays exact.
+    try testing.expectEqual(@as(u64, 1234567890123456789), try json.decodeFromSliceLeaky(u64, alloc, "1234567890123456789"));
+    try testing.expectEqual(@as(u64, 12345678901234567890), try json.decodeFromSliceLeaky(u64, alloc, "12345678901234567890"));
+}
