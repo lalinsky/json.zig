@@ -214,10 +214,7 @@ accumulate in the same pass that finds the end of the number, strings are
 scanned in blocks and copied in runs, and reads take a fast path directly out
 of the reader's buffer when the value is already there.
 
-Encoding floats is the exception. Both libraries format them with `std.fmt`,
-so there is little to gain there.
-
-## Not supported
+## Limitations
 
 Maps and dynamic documents (there is no `Value` type), untagged unions, and
 comments or trailing commas in input.
