@@ -499,10 +499,9 @@ pub const Decoder = struct {
                 const digit = window[i] -% '0';
                 if (digit > 9) break;
                 // Beyond 19 digits the value cannot fit `acc`, and the length
-                // check below hands the number to `intSlow` anyway. Keep
-                // scanning to find where it ends, but stop accumulating:
-                // continuing would overflow, which panics in a safe build and
-                // is illegal behaviour in a fast one.
+                // check below hands the number to `intSlow` regardless. Keep
+                // scanning for the end, but stop accumulating: continuing
+                // would overflow.
                 if (i - digits_start < 19) acc = acc * 10 + digit;
             }
             const ndigits = i - digits_start;
