@@ -912,8 +912,7 @@ test "integers too long for the fast path do not overflow" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // 20+ digits cannot fit the fast path's u64 accumulator. Accumulating them
-    // anyway panicked in a safe build and was illegal behaviour in a fast one.
+    // More digits than the fast path's u64 accumulator can hold.
     try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky(u64, alloc, "99999999999999999999"));
     try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky(i64, alloc, "-99999999999999999999"));
     try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky(u8, alloc, "123456789012345678901234567890"));
@@ -966,9 +965,7 @@ test "floats survive a fill boundary inside the number" {
     const a = std.testing.allocator;
     const T = struct { x: f64 };
 
-    // Each of these puts a fill boundary right after the `.` or the `e`, which
-    // the fast path used to report as a malformed number rather than as a
-    // window that simply ran out.
+    // Each of these puts a fill boundary right after the `.` or the `e`.
     const cases = [_]struct { doc: []const u8, want: f64 }{
         .{ .doc = "{\"x\":12.5}", .want = 12.5 },
         .{ .doc = "{\"x\":12e5}", .want = 12e5 },
@@ -1006,9 +1003,8 @@ test "decode and validate agree on numbers missing an integer part" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // JSON requires digits before the dot. The fast path used to accept these
-    // whenever a terminator sat in the same window, so `decode` and `validate`
-    // disagreed about the very same bytes.
+    // JSON requires digits before the dot, and `decode` and `validate` have to
+    // say the same thing about the same bytes.
     for ([_][]const u8{ "[.5]", "[-.5]", "[.5e2]", "[.0]" }) |doc| {
         try testing.expectError(error.InvalidNumber, json.decodeFromSliceLeaky([]const f64, alloc, doc));
         try testing.expect(std.meta.isError(json.validateFromSlice(doc)));
@@ -1028,8 +1024,7 @@ test "fixed byte arrays round trip" {
     const alloc = arena.allocator();
 
     const S = struct { k: [4]u8 };
-    // The encoder writes a [N]u8 as a string, so the decoder has to read one
-    // back; previously it insisted on an array and the round trip failed.
+    // The encoder writes a [N]u8 as a string, so the decoder has to read one back.
     try expectEncodes(S{ .k = "abcd".* }, "{\"k\":\"abcd\"}");
     const back = try json.decodeFromSliceLeaky(S, alloc, "{\"k\":\"abcd\"}");
     try testing.expectEqualStrings("abcd", &back.k);
@@ -1082,9 +1077,8 @@ test "a repeated field is an error" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // Silently taking the last value is a well-known source of
-    // parser-differential bugs between components reading one document.
-    // std.json rejects duplicates by default; so do we.
+    // Taking the last value silently is a parser-differential hazard, and
+    // std.json rejects duplicates too.
     const S = struct { a: u8, b: u8 };
     try testing.expectError(error.DuplicateField, json.decodeFromSliceLeaky(S, alloc, "{\"a\":1,\"b\":2,\"a\":3}"));
     try testing.expectError(error.DuplicateField, json.decodeFromSliceLeaky(S, alloc, "{\"a\":1,\"a\":1,\"b\":2}"));

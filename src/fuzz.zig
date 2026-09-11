@@ -1,27 +1,18 @@
 //! Fuzz targets.
 //!
-//! `zig build test --fuzz` does not work on Zig 0.16.0: its shipped test
-//! runner fails to compile in fuzz mode, passing a `*builtin.StackTrace` where
-//! `*const debug.StackTrace` is wanted (test_runner.zig:566). A six-line fuzz
-//! test reproduces it, so it is not something here. These targets are written
-//! against the real API and will run the day that is fixed.
+//! Two invariants:
 //!
-//! Meanwhile they are not idle: the corpus below executes on every ordinary
-//! `zig build test`, which is where their regression value lives.
+//!   * a successful typed decode implies `validate` accepts the same bytes;
+//!   * encoding a value, decoding it and encoding again yields identical bytes.
 //!
-//! One trap worth knowing. `Smith` reads its input as a length-prefixed
-//! encoding, not as raw bytes, so a corpus entry is not simply handed to the
-//! code under test. A first version here passed a list of JSON documents
-//! directly and silently tested nothing. The documents are therefore also
-//! driven by a plain test that cannot degrade into a no-op, and the corpus is
-//! built by wrapping each one in that encoding.
+//! `zig build test --fuzz` does not work on Zig 0.16.0, whose test runner does
+//! not compile in fuzz mode. Until that is fixed the corpus below is what
+//! runs, on every ordinary `zig build test`.
 //!
-//! Both invariants come from bugs this library actually had:
-//!
-//!   * `.5` was accepted by the typed decoder while `validate` rejected it, so
-//!     a successful decode must imply a valid document.
-//!   * a `[N]u8` encoded as a string could not be decoded back, so encoding a
-//!     value and decoding it must reproduce the same bytes.
+//! `Smith` reads its input as a length-prefixed encoding rather than as raw
+//! bytes, so corpus entries are wrapped by `asSmithSlice`. The same documents
+//! are also driven directly, without `Smith`, by the test above the fuzz
+//! target.
 
 const std = @import("std");
 const json = @import("json.zig");
@@ -44,8 +35,7 @@ const shapes = .{
     struct { n: ?f64 = null, xs: []const i32 = &.{} },
 };
 
-/// Documents worth keeping in front of the fuzzer. Several were once decoded
-/// wrongly.
+/// Documents worth keeping in front of the fuzzer.
 const documents: []const []const u8 = &.{
     ".5",                   "[.5]",                   "-.5",               "[1,]",
     "1e",                   "[1e]",                   "12.",               "[12.]",
@@ -57,8 +47,7 @@ const documents: []const []const u8 = &.{
     " \n\t[1] \n",          "",
 };
 
-/// Smith reads `in` as a length-prefixed encoding, so a raw document has to be
-/// wrapped before it can be handed back by `slice`.
+/// Wraps a document in the length-prefixed encoding `Smith.slice` expects.
 fn asSmithSlice(comptime doc: []const u8) []const u8 {
     const len_le = std.mem.toBytes(std.mem.nativeToLittle(u32, doc.len));
     return len_le ++ doc;
@@ -71,8 +60,7 @@ const corpus: []const []const u8 = blk: {
     break :blk &frozen;
 };
 
-/// The invariant: anything the typed decoder accepts has to be a document
-/// `validate` also accepts. `.5` broke this.
+/// Anything the typed decoder accepts has to be a document `validate` accepts.
 fn checkDecodeImpliesValidate(input: []const u8) !void {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
@@ -91,9 +79,7 @@ fn checkDecodeImpliesValidate(input: []const u8) !void {
     }
 }
 
-test "decode implies validate, on documents that once did not" {
-    // Driven directly rather than through Smith, so this cannot stop testing
-    // anything if the fuzzer's input encoding changes.
+test "decode implies validate" {
     for (documents) |doc| try checkDecodeImpliesValidate(doc);
 }
 

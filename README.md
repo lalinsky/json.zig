@@ -226,9 +226,8 @@ Nesting deeper than 256 levels is rejected.
 RFC 8259 parsers. All 95 must-accept and 188 must-reject cases pass.
 
 Every case runs twice: once through `validate`, and once decoded into real Zig
-types. The second pass matters because `validate` is not the entry point
-callers use, so a decode-only bug can hide behind it. For the must-reject
-cases the assertion is that *every* candidate type refuses the document.
+types. For the must-reject cases, every candidate type has to refuse the
+document.
 
 Of the 35 cases the suite leaves implementation-defined, this library rejects
 invalid UTF-8, malformed `\u` surrogate pairs, UTF-16 input, byte-order marks,
