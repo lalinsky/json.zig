@@ -931,3 +931,71 @@ test "integers too long for the fast path do not overflow" {
     try testing.expectEqual(@as(u64, 1234567890123456789), try json.decodeFromSliceLeaky(u64, alloc, "1234567890123456789"));
     try testing.expectEqual(@as(u64, 12345678901234567890), try json.decodeFromSliceLeaky(u64, alloc, "12345678901234567890"));
 }
+
+/// Delivers up to `chunk` bytes per fill. `TrickleReader` hands over one byte
+/// at a time, which means the float fast path only ever sees a one-byte window
+/// and declines immediately - so it cannot produce a window that ends just
+/// after a `.` or an `e`, which is where the interesting boundaries are.
+const ChunkReader = struct {
+    data: []const u8,
+    pos: usize = 0,
+    chunk: usize,
+    reader: std.Io.Reader,
+
+    fn init(buffer: []u8, data: []const u8, chunk: usize) ChunkReader {
+        return .{ .data = data, .chunk = chunk, .reader = .{
+            .vtable = &.{ .stream = stream },
+            .buffer = buffer,
+            .seek = 0,
+            .end = 0,
+        } };
+    }
+
+    fn stream(r: *std.Io.Reader, w: *std.Io.Writer, limit: std.Io.Limit) std.Io.Reader.StreamError!usize {
+        const self: *ChunkReader = @fieldParentPtr("reader", r);
+        if (self.pos >= self.data.len) return error.EndOfStream;
+        const avail = @min(self.chunk, self.data.len - self.pos);
+        const take = @min(avail, limit.toInt() orelse avail);
+        try w.writeAll(self.data[self.pos..][0..take]);
+        self.pos += take;
+        return take;
+    }
+};
+
+test "floats survive a fill boundary inside the number" {
+    const a = std.testing.allocator;
+    const T = struct { x: f64 };
+
+    // Each of these puts a fill boundary right after the `.` or the `e`, which
+    // the fast path used to report as a malformed number rather than as a
+    // window that simply ran out.
+    const cases = [_]struct { doc: []const u8, want: f64 }{
+        .{ .doc = "{\"x\":12.5}", .want = 12.5 },
+        .{ .doc = "{\"x\":12e5}", .want = 12e5 },
+        .{ .doc = "{\"x\":1e+5}", .want = 1e5 },
+        .{ .doc = "{\"x\":1E-5}", .want = 1e-5 },
+        .{ .doc = "{\"x\":-3.25}", .want = -3.25 },
+        .{ .doc = "{\"x\":123.456e-7}", .want = 123.456e-7 },
+    };
+    // Every chunk size, so the boundary lands at every offset in turn.
+    for (cases) |c| {
+        for (1..c.doc.len + 1) |chunk| {
+            var buffer: [64]u8 = undefined;
+            var cr = ChunkReader.init(&buffer, c.doc, chunk);
+            const v = json.decodeLeaky(T, a, &cr.reader) catch |err| {
+                std.debug.print("chunk={d} doc={s} -> {t}\n", .{ chunk, c.doc, err });
+                return err;
+            };
+            try testing.expectEqual(c.want, v.x);
+        }
+    }
+}
+
+test "a malformed number is still rejected when fully buffered" {
+    const a = std.testing.allocator;
+    // The same code paths must keep rejecting these, where the window really
+    // does contain everything.
+    for ([_][]const u8{ "[12.]", "[12e]", "[1e+]", "[1E-]" }) |doc| {
+        try testing.expectError(error.InvalidNumber, json.decodeFromSliceLeaky([]const f64, a, doc));
+    }
+}

@@ -134,8 +134,13 @@ fn fastFloat(comptime T: type, window: []const u8) ?struct { value: ?T, len: usi
                 exp10 -= 1;
             } else truncated = true;
         }
-        // A fraction must have at least one digit.
-        if (i == frac_start) return .{ .value = null, .len = i, .invalid = true };
+        // A fraction must have at least one digit - but running out of window
+        // is not the same as running out of digits. Declining lets the general
+        // path see the rest of the number after the next fill.
+        if (i == frac_start) {
+            if (i >= window.len) return null;
+            return .{ .value = null, .len = i, .invalid = true };
+        }
         any_digits = true;
     }
     if (!any_digits) return null;
@@ -154,7 +159,10 @@ fn fastFloat(comptime T: type, window: []const u8) ?struct { value: ?T, len: usi
             if (digit > 9) break;
             if (e < 100_000) e = e * 10 + digit;
         }
-        if (i == exp_start) return .{ .value = null, .len = i, .invalid = true };
+        if (i == exp_start) {
+            if (i >= window.len) return null;
+            return .{ .value = null, .len = i, .invalid = true };
+        }
         exp10 += if (exp_neg) -e else e;
     }
 
