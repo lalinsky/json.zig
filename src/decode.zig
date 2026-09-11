@@ -514,7 +514,12 @@ pub const Decoder = struct {
                 }
                 r.seek += i;
                 if (neg) {
-                    if (@typeInfo(T).int.signedness == .unsigned) return error.NumberOutOfRange;
+                    if (@typeInfo(T).int.signedness == .unsigned) {
+                        // -0 is a valid JSON spelling of zero and fits any
+                        // unsigned type; only a real negative does not.
+                        if (acc == 0) return 0;
+                        return error.NumberOutOfRange;
+                    }
                     return std.math.cast(T, -@as(i64, @intCast(acc))) orelse error.NumberOutOfRange;
                 }
                 return std.math.cast(T, acc) orelse error.NumberOutOfRange;
@@ -553,7 +558,10 @@ pub const Decoder = struct {
             };
         }
         if (neg) {
-            if (@typeInfo(T).int.signedness == .unsigned) return error.NumberOutOfRange;
+            if (@typeInfo(T).int.signedness == .unsigned) {
+                if (acc == 0) return 0;
+                return error.NumberOutOfRange;
+            }
             const signed = -@as(i128, acc);
             return std.math.cast(T, signed) orelse error.NumberOutOfRange;
         }

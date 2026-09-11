@@ -1054,3 +1054,24 @@ test "fixed byte arrays round trip" {
     const n = try json.decodeFromSliceLeaky(N, alloc, "{\"v\":[1,2,3]}");
     try testing.expectEqual([3]u16{ 1, 2, 3 }, n.v);
 }
+
+test "negative zero decodes into unsigned types" {
+    const a = std.testing.allocator;
+    var arena: std.heap.ArenaAllocator = .init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // -0 is a valid JSON zero and fits any unsigned type. std.json accepts it.
+    try testing.expectEqual(@as(u32, 0), try json.decodeFromSliceLeaky(u32, alloc, "-0"));
+    try testing.expectEqual(@as(u8, 0), try json.decodeFromSliceLeaky(u8, alloc, "-0"));
+    const in_array = try json.decodeFromSliceLeaky([]const u64, alloc, "[-0]");
+    try testing.expectEqual(@as(u64, 0), in_array[0]);
+
+    // Signed types are unaffected, and a real negative is still rejected.
+    try testing.expectEqual(@as(i32, 0), try json.decodeFromSliceLeaky(i32, alloc, "-0"));
+    try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky(u32, alloc, "-1"));
+
+    // -0.0 as a float keeps its sign bit.
+    const nz = try json.decodeFromSliceLeaky(f64, alloc, "-0.0");
+    try testing.expect(std.math.signbit(nz));
+}
