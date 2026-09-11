@@ -202,4 +202,5 @@ test {
     _ = encode_mod;
     _ = decode_mod;
     _ = @import("test.zig");
+    _ = @import("fuzz.zig");
 }
