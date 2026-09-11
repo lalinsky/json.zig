@@ -127,7 +127,8 @@ const Message = struct {
 };
 ```
 
-`skip_unknown_fields` steps over object members whose key matches no field,
+A field appearing twice in one object is `error.DuplicateField`, matching
+`std.json`. `skip_unknown_fields` steps over object members whose key matches no field,
 instead of failing with `error.UnknownField`. It lets a consumer read documents
 from a newer producer that added fields. Missing fields are already accepted
 without any option, as long as they have a default value or are optional.

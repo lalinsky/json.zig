@@ -41,6 +41,8 @@ pub const DecodeError = error{
     UnknownField,
     /// A field with no default and no optional type was absent.
     MissingField,
+    /// The same field appeared twice in one object.
+    DuplicateField,
     /// A string did not have exactly as many bytes as the fixed-size array it
     /// was being decoded into.
     LengthMismatch,
@@ -983,6 +985,7 @@ pub const Decoder = struct {
                         inline 0...(fields.len - 1) => |idx| {
                             const token = comptime "\"" ++ escapedLiteral(jsonKey(T, fields[idx].name)) ++ "\":";
                             if (d.tryToken(token)) {
+                                if (seen.isSet(idx)) return error.DuplicateField;
                                 @field(result, fields[idx].name) = try d.value(fields[idx].type);
                                 seen.set(idx);
                                 next_field = idx + 1;
@@ -1004,6 +1007,7 @@ pub const Decoder = struct {
                             if (!matched and name.len == key_name.len and
                                 std.mem.eql(u8, name, key_name))
                             {
+                                if (seen.isSet(idx)) return error.DuplicateField;
                                 @field(result, f.name) = try d.value(f.type);
                                 seen.set(idx);
                                 next_field = idx + 1;

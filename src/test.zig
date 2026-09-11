@@ -1075,3 +1075,36 @@ test "negative zero decodes into unsigned types" {
     const nz = try json.decodeFromSliceLeaky(f64, alloc, "-0.0");
     try testing.expect(std.math.signbit(nz));
 }
+
+test "a repeated field is an error" {
+    const a = std.testing.allocator;
+    var arena: std.heap.ArenaAllocator = .init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Silently taking the last value is a well-known source of
+    // parser-differential bugs between components reading one document.
+    // std.json rejects duplicates by default; so do we.
+    const S = struct { a: u8, b: u8 };
+    try testing.expectError(error.DuplicateField, json.decodeFromSliceLeaky(S, alloc, "{\"a\":1,\"b\":2,\"a\":3}"));
+    try testing.expectError(error.DuplicateField, json.decodeFromSliceLeaky(S, alloc, "{\"a\":1,\"a\":1,\"b\":2}"));
+
+    // Also when the repeat arrives out of declaration order, so it goes
+    // through the general match rather than the expected-field fast path.
+    try testing.expectError(error.DuplicateField, json.decodeFromSliceLeaky(S, alloc, "{\"b\":2,\"a\":1,\"b\":3}"));
+
+    // A duplicated unknown key is still just an unknown key.
+    const Skipping = struct {
+        a: u8,
+        pub fn jsonFormat() json.StructOptions {
+            return .{ .skip_unknown_fields = true };
+        }
+    };
+    const ok = try json.decodeFromSliceLeaky(Skipping, alloc, "{\"z\":1,\"a\":2,\"z\":3}");
+    try testing.expectEqual(@as(u8, 2), ok.a);
+
+    // Distinct fields are unaffected, and nesting resets per object.
+    const Nested = struct { inner: S, other: S };
+    const n = try json.decodeFromSliceLeaky(Nested, alloc, "{\"inner\":{\"a\":1,\"b\":2},\"other\":{\"a\":3,\"b\":4}}");
+    try testing.expectEqual(@as(u8, 3), n.other.a);
+}
