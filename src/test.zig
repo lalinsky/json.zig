@@ -999,3 +999,24 @@ test "a malformed number is still rejected when fully buffered" {
         try testing.expectError(error.InvalidNumber, json.decodeFromSliceLeaky([]const f64, a, doc));
     }
 }
+
+test "decode and validate agree on numbers missing an integer part" {
+    const a = std.testing.allocator;
+    var arena: std.heap.ArenaAllocator = .init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // JSON requires digits before the dot. The fast path used to accept these
+    // whenever a terminator sat in the same window, so `decode` and `validate`
+    // disagreed about the very same bytes.
+    for ([_][]const u8{ "[.5]", "[-.5]", "[.5e2]", "[.0]" }) |doc| {
+        try testing.expectError(error.InvalidNumber, json.decodeFromSliceLeaky([]const f64, alloc, doc));
+        try testing.expect(std.meta.isError(json.validateFromSlice(doc)));
+    }
+    const S = struct { x: f64 };
+    try testing.expectError(error.InvalidNumber, json.decodeFromSliceLeaky(S, alloc, "{\"x\":.5}"));
+
+    // A leading zero is still fine, and so is a fraction that has one.
+    try testing.expectEqual(@as(f64, 0.5), try json.decodeFromSliceLeaky(f64, alloc, "0.5"));
+    try testing.expectEqual(@as(f64, -0.5), try json.decodeFromSliceLeaky(f64, alloc, "-0.5"));
+}

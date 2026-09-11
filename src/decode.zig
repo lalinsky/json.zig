@@ -141,6 +141,9 @@ fn fastFloat(comptime T: type, window: []const u8) ?struct { value: ?T, len: usi
             if (i >= window.len) return null;
             return .{ .value = null, .len = i, .invalid = true };
         }
+        // Fraction digits alone do not make a number: JSON requires an integer
+        // part, so `.5` is malformed however many digits follow the dot.
+        if (int_digits == 0) return .{ .value = null, .len = i, .invalid = true };
         any_digits = true;
     }
     if (!any_digits) return null;
