@@ -1020,3 +1020,37 @@ test "decode and validate agree on numbers missing an integer part" {
     try testing.expectEqual(@as(f64, 0.5), try json.decodeFromSliceLeaky(f64, alloc, "0.5"));
     try testing.expectEqual(@as(f64, -0.5), try json.decodeFromSliceLeaky(f64, alloc, "-0.5"));
 }
+
+test "fixed byte arrays round trip" {
+    const a = std.testing.allocator;
+    var arena: std.heap.ArenaAllocator = .init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const S = struct { k: [4]u8 };
+    // The encoder writes a [N]u8 as a string, so the decoder has to read one
+    // back; previously it insisted on an array and the round trip failed.
+    try expectEncodes(S{ .k = "abcd".* }, "{\"k\":\"abcd\"}");
+    const back = try json.decodeFromSliceLeaky(S, alloc, "{\"k\":\"abcd\"}");
+    try testing.expectEqualStrings("abcd", &back.k);
+
+    // An array of numbers still works, as does std.json.
+    const also = try json.decodeFromSliceLeaky(S, alloc, "{\"k\":[97,98,99,100]}");
+    try testing.expectEqualStrings("abcd", &also.k);
+
+    // Escapes and multi-byte characters count in bytes.
+    const esc = try json.decodeFromSliceLeaky([4]u8, alloc, "\"a\\nb\\t\"");
+    try testing.expectEqualStrings("a\nb\t", &esc);
+    const utf8 = try json.decodeFromSliceLeaky([4]u8, alloc, "\"\\u00e9\\u00e9\"");
+    try testing.expectEqualStrings("\u{e9}\u{e9}", &utf8);
+
+    // A length that does not fit has nowhere to go.
+    try testing.expectError(error.LengthMismatch, json.decodeFromSliceLeaky([4]u8, alloc, "\"abc\""));
+    try testing.expectError(error.LengthMismatch, json.decodeFromSliceLeaky([4]u8, alloc, "\"abcde\""));
+
+    // Arrays of non-u8 are unaffected.
+    const N = struct { v: [3]u16 };
+    try expectEncodes(N{ .v = .{ 1, 2, 3 } }, "{\"v\":[1,2,3]}");
+    const n = try json.decodeFromSliceLeaky(N, alloc, "{\"v\":[1,2,3]}");
+    try testing.expectEqual([3]u16{ 1, 2, 3 }, n.v);
+}

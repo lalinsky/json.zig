@@ -41,6 +41,9 @@ pub const DecodeError = error{
     UnknownField,
     /// A field with no default and no optional type was absent.
     MissingField,
+    /// A string did not have exactly as many bytes as the fixed-size array it
+    /// was being decoded into.
+    LengthMismatch,
     /// Nesting deeper than `max_depth`.
     DepthLimitExceeded,
     /// A string did not name any tag of the destination enum.
@@ -393,7 +396,14 @@ pub const Decoder = struct {
             .@"enum" => return d.enumValue(T),
             .@"union" => return d.unionValue(T),
             .@"struct" => return d.object(T),
-            .array => |arr| return d.fixedArray(T, arr.child, arr.len),
+            .array => |arr| {
+                // A [N]u8 is encoded as a string, so accept that as well as an
+                // array of numbers. std.json accepts both forms too.
+                if (arr.child == u8 and try d.peekByte() == '"') {
+                    return d.fixedByteArrayFromString(T, arr.len);
+                }
+                return d.fixedArray(T, arr.child, arr.len);
+            },
             .pointer => |ptr| {
                 if (ptr.size != .slice) @compileError("json: cannot decode " ++ @typeName(T));
                 if (ptr.child == u8) return d.string();
@@ -792,6 +802,19 @@ pub const Decoder = struct {
             }
         }
         return list.toOwnedSlice(d.gpa);
+    }
+
+    /// Reads a JSON string into a fixed-size byte array. The length has to
+    /// match exactly: there is nowhere to put a shorter or longer string.
+    fn fixedByteArrayFromString(d: *Decoder, comptime T: type, comptime n: usize) DecodeError!T {
+        var out: std.ArrayList(u8) = .empty;
+        defer out.deinit(d.gpa);
+        try d.expectByte('"');
+        try d.stringBody(&out);
+        if (out.items.len != n) return error.LengthMismatch;
+        var result: T = undefined;
+        @memcpy(&result, out.items);
+        return result;
     }
 
     fn fixedArray(d: *Decoder, comptime T: type, comptime Child: type, comptime n: usize) DecodeError!T {
