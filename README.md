@@ -1,14 +1,12 @@
 # json.zig
 
-Static JSON encoding and decoding for Zig, driven by your types.
+Static JSON encoding and decoding for Zig, driven by your types. Designed to be used for APIs with strict schemas.
 
 Everything is comptime-specialized into the type being encoded or decoded:
 there is no `Value`, no tokenizer, and no runtime schema. Encoding writes to a
 `std.Io.Writer` and decoding reads from a `std.Io.Reader`, so both work against
-sockets and files, not only complete buffers.
-
-It is faster than `std.json`: several times faster at decoding, and faster at
-encoding for most payloads.
+sockets and files, not only complete buffers. Due to the static nature, it's much
+faster than `std.json`, especially at decoding.
 
 ## Installation
 
