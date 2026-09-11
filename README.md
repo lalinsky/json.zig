@@ -7,7 +7,7 @@ there is no `Value`, no tokenizer, and no runtime schema. Encoding writes to a
 `std.Io.Writer` and decoding reads from a `std.Io.Reader`, so both work against
 sockets and files, not only complete buffers.
 
-It is faster than `std.json` — several times faster at decoding, and faster at
+It is faster than `std.json`: several times faster at decoding, and faster at
 encoding for most payloads.
 
 ## Installation
@@ -56,7 +56,7 @@ std.debug.assert(decoded.value.age == 20);
 
 `decodeFromSlice` creates an arena of its own for the decoded value, which is
 what `deinit` frees. If you are already decoding into memory you release in one
-go — a per-request arena, or a fixed buffer — use `decodeFromSliceLeaky`
+go, such as a per-request arena or a fixed buffer, use `decodeFromSliceLeaky`
 instead. It allocates straight from the allocator you give it, so there is
 nothing to deinit, and it avoids a second arena inside your own:
 
@@ -197,7 +197,7 @@ const Point = struct {
 | structs | object |
 | `?T` | `null`, or the encoding of `T` |
 | enums | string naming the tag |
-| tagged unions | one-member object, or flattened — see below |
+| tagged unions | one-member object, or flattened (see below) |
 | `void` | `null` |
 
 Encoding a NaN or infinity as `null` matches what JavaScript's
@@ -214,10 +214,8 @@ accumulate in the same pass that finds the end of the number, strings are
 scanned in blocks and copied in runs, and reads take a fast path directly out
 of the reader's buffer when the value is already there.
 
-One caveat worth knowing: float *encoding* has little headroom, because it is
-dominated by shortest-round-trip formatting — `std.fmt`'s Ryu implementation,
-the same one `std.json` uses. On a struct carrying an `f64` per record, that
-formatting is about half of total encode time.
+Encoding floats is the exception. Both libraries format them with `std.fmt`,
+so there is little to gain there.
 
 ## Not supported
 
@@ -225,10 +223,6 @@ Maps and dynamic documents (there is no `Value` type), untagged unions, and
 comments or trailing commas in input.
 
 Nesting deeper than 256 levels is rejected.
-
-Floats are written at their own precision, so an `f32` encodes as the shortest
-text that round-trips to that `f32`. `std.json` widens to `f64` first and so
-prints more digits for the same value.
 
 ## Conformance
 
