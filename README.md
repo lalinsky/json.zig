@@ -46,7 +46,7 @@ defer buffer.deinit();
 try json.encode(Message{ .name = "John", .age = 20 }, &buffer.writer);
 // {"name":"John","age":20}
 
-const decoded = try json.decodeFromSlice(Message, allocator, buffer.written());
+const decoded = try json.decodeFromSlice(Message, allocator, buffer.written(), .{});
 defer decoded.deinit();
 
 std.debug.assert(decoded.value.age == 20);
@@ -62,12 +62,18 @@ nothing to deinit, and it avoids a second arena inside your own:
 var arena: std.heap.ArenaAllocator = .init(allocator);
 defer arena.deinit();
 
-const message = try json.decodeFromSliceLeaky(Message, arena.allocator(), bytes);
+const message = try json.decodeFromSliceLeaky(Message, arena.allocator(), bytes, .{});
 ```
 
 On failure a leaky decode does not release what it already allocated, so give
 it an allocator you can discard wholesale. `decode` owns an arena and frees it
 on error.
+
+The last argument is `json.DecodeOptions`, which applies to the whole decode.
+`.{}` is the strict default; `.{ .skip_unknown_fields = true }` steps over
+object members matching no field, in every type the decode reaches. That is the
+same thing a type can ask for itself below, for when the type is not yours to
+change.
 
 There is also `json.encodeAlloc(gpa, value)` when you just want a slice.
 
@@ -76,7 +82,7 @@ There is also `json.encodeAlloc(gpa, value)` when you just want a slice.
 `decodeLeaky` takes a reader, and `decode` does too:
 
 ```zig
-const message = try json.decodeLeaky(Message, arena.allocator(), &reader);
+const message = try json.decodeLeaky(Message, arena.allocator(), &reader, .{});
 ```
 
 The reader's buffer may be far smaller than the values being decoded. Strings,
@@ -115,6 +121,9 @@ A field appearing twice in one object is `error.DuplicateField`, matching
 instead of failing with `error.UnknownField`. It lets a consumer read documents
 from a newer producer that added fields. Missing fields are already accepted
 without any option, as long as they have a default value or are optional.
+
+A type declaring `skip_unknown_fields` and a decode passing it are ored, never
+overridden: whichever of the two is more permissive wins.
 
 ## Union formats
 

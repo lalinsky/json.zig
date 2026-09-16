@@ -15,6 +15,7 @@ pub const EncodeError = encode_mod.EncodeError;
 pub const Encoder = encode_mod.Encoder;
 
 pub const DecodeError = decode_mod.DecodeError;
+pub const DecodeOptions = decode_mod.DecodeOptions;
 pub const Decoder = decode_mod.Decoder;
 
 pub const StructOptions = struct {
@@ -119,6 +120,7 @@ pub fn decode(
     comptime T: type,
     gpa: std.mem.Allocator,
     reader: *std.Io.Reader,
+    options: DecodeOptions,
 ) (DecodeError || std.mem.Allocator.Error)!Decoded(T) {
     var parsed: Decoded(T) = .{
         .arena = try gpa.create(std.heap.ArenaAllocator),
@@ -128,7 +130,7 @@ pub fn decode(
     parsed.arena.* = .init(gpa);
     errdefer parsed.arena.deinit();
 
-    parsed.value = try decodeLeaky(T, parsed.arena.allocator(), reader);
+    parsed.value = try decodeLeaky(T, parsed.arena.allocator(), reader, options);
     return parsed;
 }
 
@@ -143,8 +145,9 @@ pub fn decodeLeaky(
     comptime T: type,
     gpa: std.mem.Allocator,
     reader: *std.Io.Reader,
+    options: DecodeOptions,
 ) DecodeError!T {
-    var decoder: Decoder = .{ .reader = reader, .gpa = gpa };
+    var decoder: Decoder = .{ .reader = reader, .gpa = gpa, .options = options };
     const value = try decoder.value(T);
     try decoder.endOfDocument();
     return value;
@@ -184,18 +187,20 @@ pub fn decodeFromSlice(
     comptime T: type,
     gpa: std.mem.Allocator,
     bytes: []const u8,
+    options: DecodeOptions,
 ) (DecodeError || std.mem.Allocator.Error)!Decoded(T) {
     var reader: std.Io.Reader = .fixed(bytes);
-    return decode(T, gpa, &reader);
+    return decode(T, gpa, &reader, options);
 }
 
 pub fn decodeFromSliceLeaky(
     comptime T: type,
     gpa: std.mem.Allocator,
     bytes: []const u8,
+    options: DecodeOptions,
 ) DecodeError!T {
     var reader: std.Io.Reader = .fixed(bytes);
-    return decodeLeaky(T, gpa, &reader);
+    return decodeLeaky(T, gpa, &reader, options);
 }
 
 test {

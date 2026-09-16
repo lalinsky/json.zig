@@ -158,7 +158,7 @@ fn decodeAsRecordedType(gpa: std.mem.Allocator, name: []const u8, bytes: []const
         if (std.mem.eql(u8, case[0], name)) {
             var arena: std.heap.ArenaAllocator = .init(gpa);
             defer arena.deinit();
-            if (json.decodeFromSliceLeaky(case[1], arena.allocator(), bytes)) |_| {
+            if (json.decodeFromSliceLeaky(case[1], arena.allocator(), bytes, .{})) |_| {
                 return {};
             } else |err| {
                 return err;
@@ -173,7 +173,7 @@ fn anyTypeDecodes(gpa: std.mem.Allocator, bytes: []const u8) bool {
     inline for (reject_candidates) |T| {
         var arena: std.heap.ArenaAllocator = .init(gpa);
         defer arena.deinit();
-        if (json.decodeFromSliceLeaky(T, arena.allocator(), bytes)) |_| {
+        if (json.decodeFromSliceLeaky(T, arena.allocator(), bytes, .{})) |_| {
             return true;
         } else |_| {}
     }

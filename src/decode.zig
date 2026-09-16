@@ -36,8 +36,8 @@ pub const DecodeError = error{
     /// A `\uD800`-`\uDBFF` escape not followed by a low surrogate, or a lone
     /// low surrogate.
     InvalidSurrogatePair,
-    /// An object key that matches no field, when the type has not opted into
-    /// `skip_unknown_fields`.
+    /// An object key that matches no field, when neither the type nor the
+    /// decode opted into `skip_unknown_fields`.
     UnknownField,
     /// A field with no default and no optional type was absent.
     MissingField,
@@ -241,9 +241,21 @@ pub const max_number_len = 512;
 /// recursive types, since nesting depth is otherwise bounded by the Zig type.
 pub const max_depth = 256;
 
+/// Options for one whole decode, as opposed to the `StructOptions` a single
+/// type declares for itself. Where both speak, the looser of the two wins.
+pub const DecodeOptions = struct {
+    /// Step over object members whose key matches no field, instead of failing
+    /// with `error.UnknownField`. What `StructOptions.skip_unknown_fields`
+    /// does for one type, for every type reached by this decode - which is how
+    /// a type you do not own, and so cannot give a `jsonFormat`, reads a
+    /// document that carries extra members.
+    skip_unknown_fields: bool = false,
+};
+
 pub const Decoder = struct {
     reader: *Reader,
     gpa: Allocator,
+    options: DecodeOptions = .{},
     depth: u16 = 0,
 
     // ------------------------------------------------------------ scanning
@@ -1015,7 +1027,8 @@ pub const Decoder = struct {
                         }
                     }
                     if (!matched) {
-                        if (!options.skip_unknown_fields) return error.UnknownField;
+                        if (!options.skip_unknown_fields and !d.options.skip_unknown_fields)
+                            return error.UnknownField;
                         try d.skipValue();
                     }
                 }

@@ -67,7 +67,7 @@ fn checkDecodeImpliesValidate(input: []const u8) !void {
 
     inline for (shapes) |T| {
         _ = arena.reset(.retain_capacity);
-        if (json.decodeFromSliceLeaky(T, arena.allocator(), input)) |_| {
+        if (json.decodeFromSliceLeaky(T, arena.allocator(), input, .{})) |_| {
             json.validateFromSlice(input) catch |err| {
                 std.debug.print(
                     "decoded as {s} but validate rejected it with {t}\ninput: {s}\n",
@@ -152,7 +152,7 @@ fn roundTrip(_: void, smith: *Smith) anyerror!void {
 
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
-    const back = json.decodeFromSliceLeaky(Payload, arena.allocator(), first) catch |err| {
+    const back = json.decodeFromSliceLeaky(Payload, arena.allocator(), first, .{}) catch |err| {
         std.debug.print("could not decode our own output: {t}\n{s}\n", .{ err, first });
         return error.RoundTripFailed;
     };

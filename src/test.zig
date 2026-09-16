@@ -41,14 +41,14 @@ test "encode non-finite floats as null" {
 
 test "decode integer limits and range errors" {
     const a = std.testing.allocator;
-    try testing.expectEqual(@as(u64, std.math.maxInt(u64)), try json.decodeFromSliceLeaky(u64, a, "18446744073709551615"));
-    try testing.expectEqual(@as(i64, std.math.minInt(i64)), try json.decodeFromSliceLeaky(i64, a, "-9223372036854775808"));
-    try testing.expectEqual(@as(i32, -2147483648), try json.decodeFromSliceLeaky(i32, a, "-2147483648"));
+    try testing.expectEqual(@as(u64, std.math.maxInt(u64)), try json.decodeFromSliceLeaky(u64, a, "18446744073709551615", .{}));
+    try testing.expectEqual(@as(i64, std.math.minInt(i64)), try json.decodeFromSliceLeaky(i64, a, "-9223372036854775808", .{}));
+    try testing.expectEqual(@as(i32, -2147483648), try json.decodeFromSliceLeaky(i32, a, "-2147483648", .{}));
 
-    try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky(u8, a, "256"));
-    try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky(u8, a, "-1"));
-    try testing.expectError(error.InvalidNumber, json.decodeFromSliceLeaky(u32, a, "1.5"));
-    try testing.expectError(error.InvalidNumber, json.decodeFromSliceLeaky(u32, a, "1e3"));
+    try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky(u8, a, "256", .{}));
+    try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky(u8, a, "-1", .{}));
+    try testing.expectError(error.InvalidNumber, json.decodeFromSliceLeaky(u32, a, "1.5", .{}));
+    try testing.expectError(error.InvalidNumber, json.decodeFromSliceLeaky(u32, a, "1e3", .{}));
 }
 
 /// Every one of these must land on the same bits `std.fmt.parseFloat`
@@ -72,7 +72,7 @@ const float_inputs = [_][]const u8{
 test "decode floats agree with std" {
     const a = std.testing.allocator;
     for (float_inputs) |in| {
-        const mine = try json.decodeFromSliceLeaky(f64, a, in);
+        const mine = try json.decodeFromSliceLeaky(f64, a, in, .{});
         const theirs = try std.fmt.parseFloat(f64, in);
         try testing.expectEqual(@as(u64, @bitCast(theirs)), @as(u64, @bitCast(mine)));
     }
@@ -81,7 +81,7 @@ test "decode floats agree with std" {
 test "decode f32 agrees with std" {
     const a = std.testing.allocator;
     for (float_inputs) |in| {
-        const mine = try json.decodeFromSliceLeaky(f32, a, in);
+        const mine = try json.decodeFromSliceLeaky(f32, a, in, .{});
         const theirs = try std.fmt.parseFloat(f32, in);
         try testing.expectEqual(@as(u32, @bitCast(theirs)), @as(u32, @bitCast(mine)));
     }
@@ -97,7 +97,7 @@ test "floats agree with std when trickled one byte at a time" {
         // declines and the general path has to produce identical bits.
         var buffer: [8]u8 = undefined;
         var trickle = TrickleReader.init(&buffer, doc);
-        const mine = try json.decodeLeaky(T, a, &trickle.reader);
+        const mine = try json.decodeLeaky(T, a, &trickle.reader, .{});
         const theirs = try std.fmt.parseFloat(f64, in);
         try testing.expectEqual(@as(u64, @bitCast(theirs)), @as(u64, @bitCast(mine.x)));
     }
@@ -118,7 +118,7 @@ test "decode string escapes and surrogate pairs" {
         .{ .in = "\"0123456789abcdefghij\\nklmnopqrstuvwxyz\"", .want = "0123456789abcdefghij\nklmnopqrstuvwxyz" },
     };
     for (cases) |c| {
-        const got = try json.decodeFromSliceLeaky([]const u8, a, c.in);
+        const got = try json.decodeFromSliceLeaky([]const u8, a, c.in, .{});
         defer a.free(got);
         try testing.expectEqualStrings(c.want, got);
     }
@@ -126,11 +126,11 @@ test "decode string escapes and surrogate pairs" {
 
 test "reject malformed escapes" {
     const a = std.testing.allocator;
-    try testing.expectError(error.InvalidSurrogatePair, json.decodeFromSliceLeaky([]const u8, a, "\"\\ud83d\""));
-    try testing.expectError(error.InvalidSurrogatePair, json.decodeFromSliceLeaky([]const u8, a, "\"\\udc00x\""));
-    try testing.expectError(error.InvalidSurrogatePair, json.decodeFromSliceLeaky([]const u8, a, "\"\\ud83dx\""));
-    try testing.expectError(error.InvalidEscape, json.decodeFromSliceLeaky([]const u8, a, "\"\\q\""));
-    try testing.expectError(error.InvalidEscape, json.decodeFromSliceLeaky([]const u8, a, "\"\\u00zz\""));
+    try testing.expectError(error.InvalidSurrogatePair, json.decodeFromSliceLeaky([]const u8, a, "\"\\ud83d\"", .{}));
+    try testing.expectError(error.InvalidSurrogatePair, json.decodeFromSliceLeaky([]const u8, a, "\"\\udc00x\"", .{}));
+    try testing.expectError(error.InvalidSurrogatePair, json.decodeFromSliceLeaky([]const u8, a, "\"\\ud83dx\"", .{}));
+    try testing.expectError(error.InvalidEscape, json.decodeFromSliceLeaky([]const u8, a, "\"\\q\"", .{}));
+    try testing.expectError(error.InvalidEscape, json.decodeFromSliceLeaky([]const u8, a, "\"\\u00zz\"", .{}));
 }
 
 test "encode escapes what std.json escapes" {
@@ -148,7 +148,7 @@ test "struct round trip" {
     const value: Simple = .{ .id = 42, .name = "alice", .active = true, .score = 1.25 };
     try expectEncodes(value, "{\"id\":42,\"name\":\"alice\",\"active\":true,\"score\":1.25}");
 
-    const decoded = try json.decodeFromSlice(Simple, a, "{\"id\":42,\"name\":\"alice\",\"active\":true,\"score\":1.25}");
+    const decoded = try json.decodeFromSlice(Simple, a, "{\"id\":42,\"name\":\"alice\",\"active\":true,\"score\":1.25}", .{});
     defer decoded.deinit();
     try testing.expectEqual(@as(u64, 42), decoded.value.id);
     try testing.expectEqualStrings("alice", decoded.value.name);
@@ -163,7 +163,7 @@ test "optionals, defaults and omitted fields" {
     try expectEncodes(T{ .req = "x", .opt = null }, "{\"req\":\"x\",\"dflt\":7}");
     try expectEncodes(T{ .req = "x", .opt = 3 }, "{\"req\":\"x\",\"opt\":3,\"dflt\":7}");
 
-    const v = try json.decodeFromSliceLeaky(T, a, "{\"req\":\"x\"}");
+    const v = try json.decodeFromSliceLeaky(T, a, "{\"req\":\"x\"}", .{});
     defer a.free(v.req);
     try testing.expectEqual(@as(?u32, null), v.opt);
     try testing.expectEqual(@as(u8, 7), v.dflt);
@@ -172,8 +172,8 @@ test "optionals, defaults and omitted fields" {
     // so these run against an arena rather than the testing allocator.
     var arena: std.heap.ArenaAllocator = .init(a);
     defer arena.deinit();
-    try testing.expectError(error.MissingField, json.decodeFromSliceLeaky(T, arena.allocator(), "{}"));
-    try testing.expectError(error.UnknownField, json.decodeFromSliceLeaky(T, arena.allocator(), "{\"req\":\"x\",\"nope\":1}"));
+    try testing.expectError(error.MissingField, json.decodeFromSliceLeaky(T, arena.allocator(), "{}", .{}));
+    try testing.expectError(error.UnknownField, json.decodeFromSliceLeaky(T, arena.allocator(), "{\"req\":\"x\",\"nope\":1}", .{}));
 }
 
 test "omit_null_fields off" {
@@ -204,7 +204,7 @@ test "custom field names" {
     const a = std.testing.allocator;
     try expectEncodes(T{ .user_id = 1, .display_name = "z" }, "{\"userId\":1,\"displayName\":\"z\"}");
 
-    const v = try json.decodeFromSliceLeaky(T, a, "{\"userId\":1,\"displayName\":\"z\"}");
+    const v = try json.decodeFromSliceLeaky(T, a, "{\"userId\":1,\"displayName\":\"z\"}", .{});
     defer a.free(v.display_name);
     try testing.expectEqual(@as(u32, 1), v.user_id);
 }
@@ -221,8 +221,65 @@ test "skip_unknown_fields steps over every value shape" {
         \\{"a":{"nested":[1,2,{"deep":"str\"esc"}]},"b":[[]],"c":null,"d":true,
         \\ "e":-1.5e3,"keep":9,"f":"tail"}
     ;
-    const v = try json.decodeFromSliceLeaky(T, a, doc);
+    const v = try json.decodeFromSliceLeaky(T, a, doc, .{});
     try testing.expectEqual(@as(u8, 9), v.keep);
+}
+
+test "the decode option skips unknown fields in types that cannot declare it" {
+    // The point of the option: neither type says anything about unknown
+    // fields, and neither has to be ours to change.
+    const Inner = struct { n: i32 };
+    const Outer = struct { inner: Inner, list: []const Inner };
+    const a = std.testing.allocator;
+    var arena: std.heap.ArenaAllocator = .init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const doc =
+        \\{"extra":[1,2],"inner":{"n":1,"x":"gone"},"list":[{"n":2,"y":null}],"z":7}
+    ;
+
+    try testing.expectError(error.UnknownField, json.decodeFromSliceLeaky(Outer, alloc, doc, .{}));
+
+    // It reaches every type in the decode, not just the outermost one.
+    const v = try json.decodeFromSliceLeaky(Outer, alloc, doc, .{ .skip_unknown_fields = true });
+    try testing.expectEqual(@as(i32, 1), v.inner.n);
+    try testing.expectEqual(@as(usize, 1), v.list.len);
+    try testing.expectEqual(@as(i32, 2), v.list[0].n);
+}
+
+test "the decode option and jsonFormat are ored, not overridden" {
+    const Strict = struct { n: u8 };
+    const Lenient = struct {
+        n: u8,
+        pub fn jsonFormat() json.StructOptions {
+            return .{ .skip_unknown_fields = true };
+        }
+    };
+    const a = std.testing.allocator;
+
+    // A type that opted in keeps skipping when the decode says nothing.
+    const lenient = try json.decodeFromSliceLeaky(Lenient, a, "{\"n\":1,\"x\":2}", .{});
+    try testing.expectEqual(@as(u8, 1), lenient.n);
+
+    // A type that did not opt in skips when the decode says so.
+    const strict = try json.decodeFromSliceLeaky(Strict, a, "{\"n\":1,\"x\":2}", .{ .skip_unknown_fields = true });
+    try testing.expectEqual(@as(u8, 1), strict.n);
+}
+
+test "the decode option reaches a flattened tagged union" {
+    const Shape = union(enum) {
+        circle: struct { radius: f64 },
+        pub fn jsonFormat() json.UnionFormat {
+            return .{ .as_tagged = .{ .tag_field = "type" } };
+        }
+    };
+    const a = std.testing.allocator;
+    const doc = "{\"type\":\"circle\",\"radius\":2.5,\"unit\":\"cm\"}";
+
+    try testing.expectError(error.UnknownField, json.decodeFromSliceLeaky(Shape, a, doc, .{}));
+
+    const v = try json.decodeFromSliceLeaky(Shape, a, doc, .{ .skip_unknown_fields = true });
+    try testing.expectEqual(@as(f64, 2.5), v.circle.radius);
 }
 
 test "nested structs, slices and fixed arrays" {
@@ -237,7 +294,7 @@ test "nested structs, slices and fixed arrays" {
     ;
     var arena: std.heap.ArenaAllocator = .init(a);
     defer arena.deinit();
-    const v = try json.decodeFromSliceLeaky(Outer, arena.allocator(), doc);
+    const v = try json.decodeFromSliceLeaky(Outer, arena.allocator(), doc, .{});
     try testing.expectEqual(@as(i32, -3), v.inner.n);
     try testing.expectEqual(@as(usize, 2), v.list.len);
     try testing.expectEqualStrings("b", v.list[1].tag);
@@ -251,24 +308,24 @@ test "enums and tagged unions" {
     const a = std.testing.allocator;
 
     try expectEncodes(Color.green, "\"green\"");
-    try testing.expectEqual(Color.blue, try json.decodeFromSliceLeaky(Color, a, "\"blue\""));
-    try testing.expectError(error.InvalidEnumTag, json.decodeFromSliceLeaky(Color, a, "\"mauve\""));
+    try testing.expectEqual(Color.blue, try json.decodeFromSliceLeaky(Color, a, "\"blue\"", .{}));
+    try testing.expectError(error.InvalidEnumTag, json.decodeFromSliceLeaky(Color, a, "\"mauve\"", .{}));
 
     try expectEncodes(Shape{ .circle = 2.5 }, "{\"circle\":2.5}");
     try expectEncodes(Shape{ .rect = .{ 3, 4 } }, "{\"rect\":[3,4]}");
 
-    const s = try json.decodeFromSliceLeaky(Shape, a, "{\"rect\":[3,4]}");
+    const s = try json.decodeFromSliceLeaky(Shape, a, "{\"rect\":[3,4]}", .{});
     try testing.expectEqual([2]u32{ 3, 4 }, s.rect);
-    const n = try json.decodeFromSliceLeaky(Shape, a, "{\"none\":null}");
+    const n = try json.decodeFromSliceLeaky(Shape, a, "{\"none\":null}", .{});
     try testing.expectEqual(Shape.none, n);
 }
 
 test "trailing data is rejected" {
     const a = std.testing.allocator;
-    try testing.expectError(error.TrailingData, json.decodeFromSliceLeaky(u8, a, "1 2"));
-    try testing.expectError(error.TrailingData, json.decodeFromSliceLeaky(u8, a, "1 junk"));
+    try testing.expectError(error.TrailingData, json.decodeFromSliceLeaky(u8, a, "1 2", .{}));
+    try testing.expectError(error.TrailingData, json.decodeFromSliceLeaky(u8, a, "1 junk", .{}));
     // Trailing whitespace alone is fine.
-    try testing.expectEqual(@as(u8, 1), try json.decodeFromSliceLeaky(u8, a, " 1 \n "));
+    try testing.expectEqual(@as(u8, 1), try json.decodeFromSliceLeaky(u8, a, " 1 \n ", .{}));
 }
 
 // ------------------------------------------------------------------ streaming
@@ -309,7 +366,7 @@ test "decode from a trickling stream at every buffer size" {
         var arena: std.heap.ArenaAllocator = .init(a);
         defer arena.deinit();
 
-        const v = try json.decodeLeaky(Simple, arena.allocator(), &trickle.reader);
+        const v = try json.decodeLeaky(Simple, arena.allocator(), &trickle.reader, .{});
         try testing.expectEqual(@as(u64, std.math.maxInt(u64)), v.id);
         try testing.expectEqualStrings("a name with \"escapes\" and \u{e9}", v.name);
         try testing.expect(!v.active);
@@ -328,7 +385,7 @@ test "a string far larger than the reader buffer" {
         var trickle = TrickleReader.init(buffer[0..buffer_len], doc);
         var arena: std.heap.ArenaAllocator = .init(a);
         defer arena.deinit();
-        const v = try json.decodeLeaky(T, arena.allocator(), &trickle.reader);
+        const v = try json.decodeLeaky(T, arena.allocator(), &trickle.reader, .{});
         try testing.expectEqualStrings(long, v.s);
     }
 }
@@ -347,7 +404,7 @@ test "a skipped value far larger than the reader buffer" {
     var trickle = TrickleReader.init(&buffer, doc);
     var arena: std.heap.ArenaAllocator = .init(a);
     defer arena.deinit();
-    const v = try json.decodeLeaky(T, arena.allocator(), &trickle.reader);
+    const v = try json.decodeLeaky(T, arena.allocator(), &trickle.reader, .{});
     try testing.expectEqual(@as(u8, 5), v.keep);
 }
 
@@ -362,14 +419,14 @@ test "an object key longer than any field name is handled without allocating" {
     const doc = "{\"" ++ ("k" ** 300) ++ "\":1,\"id\":2}";
     var buffer: [16]u8 = undefined;
     var trickle = TrickleReader.init(&buffer, doc);
-    const v = try json.decodeLeaky(T, a, &trickle.reader);
+    const v = try json.decodeLeaky(T, a, &trickle.reader, .{});
     try testing.expectEqual(@as(u8, 2), v.id);
 }
 
 test "an escaped key still matches its field" {
     const a = std.testing.allocator;
     const T = struct { id: u8 };
-    const v = try json.decodeFromSliceLeaky(T, a, "{\"\\u0069d\":3}");
+    const v = try json.decodeFromSliceLeaky(T, a, "{\"\\u0069d\":3}", .{});
     try testing.expectEqual(@as(u8, 3), v.id);
 }
 
@@ -392,7 +449,7 @@ test "our output parses as std.json, and we parse std.json's output" {
     var w: std.Io.Writer = .fixed(&theirs);
     try std.json.Stringify.value(value, .{}, &w);
 
-    const via_ours = try json.decodeFromSlice(Simple, a, w.buffered());
+    const via_ours = try json.decodeFromSlice(Simple, a, w.buffered(), .{});
     defer via_ours.deinit();
     try testing.expectEqualStrings(value.name, via_ours.value.name);
     try testing.expectEqual(value.score, via_ours.value.score);
@@ -426,7 +483,7 @@ test "custom jsonWrite and jsonRead" {
     const a = std.testing.allocator;
     try expectEncodes(Point{ .x = 1.5, .y = -2.5 }, "[1.5,-2.5]");
 
-    const p = try json.decodeFromSliceLeaky(Point, a, "[1.5,-2.5]");
+    const p = try json.decodeFromSliceLeaky(Point, a, "[1.5,-2.5]", .{});
     try testing.expectEqual(@as(f64, 1.5), p.x);
     try testing.expectEqual(@as(f64, -2.5), p.y);
 
@@ -436,7 +493,7 @@ test "custom jsonWrite and jsonRead" {
         Wrapper{ .at = .{ .x = 0, .y = 3 }, .label = "z" },
         "{\"at\":[0,3],\"label\":\"z\"}",
     );
-    const w = try json.decodeFromSliceLeaky(Wrapper, a, "{\"at\":[0,3],\"label\":\"z\"}");
+    const w = try json.decodeFromSliceLeaky(Wrapper, a, "{\"at\":[0,3],\"label\":\"z\"}", .{});
     defer a.free(w.label);
     try testing.expectEqual(@as(f64, 3), w.at.y);
 }
@@ -467,7 +524,7 @@ test "skipped values must be well formed" {
         "{\"bad\":{\"a\":},\"keep\":1}",
     };
     for (bad) |doc| {
-        try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky(T, alloc, doc));
+        try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky(T, alloc, doc, .{}));
     }
 
     // Well-formed skips still work, including nesting and escapes.
@@ -475,6 +532,7 @@ test "skipped values must be well formed" {
         T,
         alloc,
         "{\"bad\":{\"x\":[1,{\"y\":[\"a\\\"b\",null,true]}]},\"keep\":7}",
+        .{},
     );
     try testing.expectEqual(@as(u8, 7), good.keep);
 }
@@ -485,17 +543,17 @@ test "unescaped control characters are rejected" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    try testing.expectError(error.UnescapedControlCharacter, json.decodeFromSliceLeaky([]const u8, alloc, "\"a\nb\""));
-    try testing.expectError(error.UnescapedControlCharacter, json.decodeFromSliceLeaky([]const u8, alloc, "\"a\x00b\""));
-    try testing.expectError(error.UnescapedControlCharacter, json.decodeFromSliceLeaky([]const u8, alloc, "\"a\tb\""));
-    try testing.expectError(error.UnescapedControlCharacter, json.decodeFromSliceLeaky([]const u8, alloc, "\"a\x1fb\""));
+    try testing.expectError(error.UnescapedControlCharacter, json.decodeFromSliceLeaky([]const u8, alloc, "\"a\nb\"", .{}));
+    try testing.expectError(error.UnescapedControlCharacter, json.decodeFromSliceLeaky([]const u8, alloc, "\"a\x00b\"", .{}));
+    try testing.expectError(error.UnescapedControlCharacter, json.decodeFromSliceLeaky([]const u8, alloc, "\"a\tb\"", .{}));
+    try testing.expectError(error.UnescapedControlCharacter, json.decodeFromSliceLeaky([]const u8, alloc, "\"a\x1fb\"", .{}));
     // 0x7f is not a C0 control character and stays legal.
-    const del = try json.decodeFromSliceLeaky([]const u8, alloc, "\"a\x7fb\"");
+    const del = try json.decodeFromSliceLeaky([]const u8, alloc, "\"a\x7fb\"", .{});
     try testing.expectEqualStrings("a\x7fb", del);
 
     // Also in keys, and past the 16-byte scan block.
     const T = struct { @"0123456789abcdefghij": u8 };
-    try testing.expectError(error.UnescapedControlCharacter, json.decodeFromSliceLeaky(T, alloc, "{\"0123456789abcdefghij\nx\":1}"));
+    try testing.expectError(error.UnescapedControlCharacter, json.decodeFromSliceLeaky(T, alloc, "{\"0123456789abcdefghij\nx\":1}", .{}));
     // And inside a value being skipped.
     const S = struct {
         keep: u8,
@@ -503,7 +561,7 @@ test "unescaped control characters are rejected" {
             return .{ .skip_unknown_fields = true };
         }
     };
-    try testing.expectError(error.UnescapedControlCharacter, json.decodeFromSliceLeaky(S, alloc, "{\"bad\":\"a\nb\",\"keep\":1}"));
+    try testing.expectError(error.UnescapedControlCharacter, json.decodeFromSliceLeaky(S, alloc, "{\"bad\":\"a\nb\",\"keep\":1}", .{}));
 }
 
 test "floats encode at their own precision" {
@@ -543,7 +601,7 @@ test "names baked into the output are escaped" {
     try expectEncodes(Weird{ .@"x\"y" = 2 }, "{\"x\\\"y\":2}");
 
     const a = std.testing.allocator;
-    const back = try json.decodeFromSliceLeaky(Weird, a, "{\"x\\\"y\":2}");
+    const back = try json.decodeFromSliceLeaky(Weird, a, "{\"x\\\"y\":2}", .{});
     try testing.expectEqual(@as(u8, 2), back.@"x\"y");
 
     // Union tags too.
@@ -628,7 +686,7 @@ test "invalid utf-8 in strings is rejected" {
     var arena: std.heap.ArenaAllocator = .init(a);
     defer arena.deinit();
     for (invalid_utf8) |doc| {
-        try testing.expectError(error.InvalidUtf8, json.decodeFromSliceLeaky([]const u8, arena.allocator(), doc));
+        try testing.expectError(error.InvalidUtf8, json.decodeFromSliceLeaky([]const u8, arena.allocator(), doc, .{}));
         try testing.expectError(error.InvalidUtf8, json.validateFromSlice(doc));
     }
 }
@@ -637,7 +695,7 @@ test "valid utf-8 is accepted" {
     const a = std.testing.allocator;
     for (valid_utf8) |doc| {
         try json.validateFromSlice(doc);
-        const s = try json.decodeFromSliceLeaky([]const u8, a, doc);
+        const s = try json.decodeFromSliceLeaky([]const u8, a, doc, .{});
         a.free(s);
     }
 }
@@ -653,7 +711,7 @@ test "utf-8 validation across reader fills" {
             var trickle = TrickleReader.init(buffer[0..buffer_len], doc);
             var arena: std.heap.ArenaAllocator = .init(a);
             defer arena.deinit();
-            const s = try json.decodeLeaky([]const u8, arena.allocator(), &trickle.reader);
+            const s = try json.decodeLeaky([]const u8, arena.allocator(), &trickle.reader, .{});
             try testing.expectEqualStrings(doc[1 .. doc.len - 1], s);
         }
     }
@@ -665,7 +723,7 @@ test "utf-8 validation across reader fills" {
         defer arena.deinit();
         try testing.expectError(
             error.InvalidUtf8,
-            json.decodeLeaky([]const u8, arena.allocator(), &trickle.reader),
+            json.decodeLeaky([]const u8, arena.allocator(), &trickle.reader, .{}),
         );
     }
 }
@@ -682,12 +740,12 @@ test "utf-8 is validated in keys and in skipped values" {
             return .{ .skip_unknown_fields = true };
         }
     };
-    try testing.expectError(error.InvalidUtf8, json.decodeFromSliceLeaky(Skipping, alloc, "{\"a\xc3\x28\":1,\"keep\":2}"));
-    try testing.expectError(error.InvalidUtf8, json.decodeFromSliceLeaky(Skipping, alloc, "{\"other\":\"\xc0\xaf\",\"keep\":2}"));
+    try testing.expectError(error.InvalidUtf8, json.decodeFromSliceLeaky(Skipping, alloc, "{\"a\xc3\x28\":1,\"keep\":2}", .{}));
+    try testing.expectError(error.InvalidUtf8, json.decodeFromSliceLeaky(Skipping, alloc, "{\"other\":\"\xc0\xaf\",\"keep\":2}", .{}));
 
     // A valid non-ASCII key still matches its field.
     const Accented = struct { @"caf\u{e9}": u8 };
-    const v = try json.decodeFromSliceLeaky(Accented, alloc, "{\"caf\xc3\xa9\":7}");
+    const v = try json.decodeFromSliceLeaky(Accented, alloc, "{\"caf\xc3\xa9\":7}", .{});
     try testing.expectEqual(@as(u8, 7), v.@"caf\u{e9}");
 }
 
@@ -739,7 +797,7 @@ test "Encoder helpers build valid JSON" {
 
     var arena: std.heap.ArenaAllocator = .init(a);
     defer arena.deinit();
-    const back = try json.decodeFromSliceLeaky(Matrix, arena.allocator(), encoded);
+    const back = try json.decodeFromSliceLeaky(Matrix, arena.allocator(), encoded, .{});
     try testing.expectEqual(@as(usize, 2), back.rows);
     try testing.expectEqual(@as(usize, 3), back.cols);
     try testing.expectEqual(@as(f64, 2.5), back.data[1]);
@@ -810,12 +868,12 @@ test "unions as a one-member object" {
     try expectEncodes(ShapeObject{ .scalar = 1.5 }, "{\"scalar\":1.5}");
     try expectEncodes(ShapeObject{ .nothing = {} }, "{\"nothing\":null}");
 
-    const c = try json.decodeFromSliceLeaky(ShapeObject, alloc, "{\"circle\":{\"radius\":2.5}}");
+    const c = try json.decodeFromSliceLeaky(ShapeObject, alloc, "{\"circle\":{\"radius\":2.5}}", .{});
     try testing.expectEqual(@as(f64, 2.5), c.circle.radius);
-    const n = try json.decodeFromSliceLeaky(ShapeObject, alloc, "{\"nothing\":null}");
+    const n = try json.decodeFromSliceLeaky(ShapeObject, alloc, "{\"nothing\":null}", .{});
     try testing.expectEqual(ShapeObject.nothing, n);
 
-    try testing.expectError(error.UnknownUnionVariant, json.decodeFromSliceLeaky(ShapeObject, alloc, "{\"nope\":1}"));
+    try testing.expectError(error.UnknownUnionVariant, json.decodeFromSliceLeaky(ShapeObject, alloc, "{\"nope\":1}", .{}));
 }
 
 test "unions as a flattened tagged object" {
@@ -834,15 +892,15 @@ test "unions as a flattened tagged object" {
     // A void variant has nothing to hoist.
     try expectEncodes(ShapeTagged{ .nothing = {} }, "{\"type\":\"nothing\"}");
 
-    const r = try json.decodeFromSliceLeaky(ShapeTagged, alloc, "{\"type\":\"rect\",\"w\":3,\"h\":4,\"label\":\"box\"}");
+    const r = try json.decodeFromSliceLeaky(ShapeTagged, alloc, "{\"type\":\"rect\",\"w\":3,\"h\":4,\"label\":\"box\"}", .{});
     try testing.expectEqual(@as(u32, 3), r.rect.w);
     try testing.expectEqualStrings("box", r.rect.label.?);
 
     // Payload field left out, filled from its default.
-    const r2 = try json.decodeFromSliceLeaky(ShapeTagged, alloc, "{\"type\":\"rect\",\"w\":1,\"h\":2}");
+    const r2 = try json.decodeFromSliceLeaky(ShapeTagged, alloc, "{\"type\":\"rect\",\"w\":1,\"h\":2}", .{});
     try testing.expectEqual(@as(?[]const u8, null), r2.rect.label);
 
-    const n = try json.decodeFromSliceLeaky(ShapeTagged, alloc, "{\"type\":\"nothing\"}");
+    const n = try json.decodeFromSliceLeaky(ShapeTagged, alloc, "{\"type\":\"nothing\"}", .{});
     try testing.expectEqual(ShapeTagged.nothing, n);
 
     // Round trip through both directions.
@@ -854,7 +912,7 @@ test "unions as a flattened tagged object" {
         var buf: [128]u8 = undefined;
         const encoded = try encodeToBuf(v, &buf);
         try json.validateFromSlice(encoded);
-        const back = try json.decodeFromSliceLeaky(ShapeTagged, alloc, encoded);
+        const back = try json.decodeFromSliceLeaky(ShapeTagged, alloc, encoded, .{});
         try testing.expectEqual(std.meta.activeTag(v), std.meta.activeTag(back));
     }
 }
@@ -866,11 +924,11 @@ test "as_tagged rejects a missing or misplaced tag" {
     const alloc = arena.allocator();
 
     // The tag has to be the first member; a streaming decoder cannot go back.
-    try testing.expectError(error.MissingUnionTag, json.decodeFromSliceLeaky(ShapeTagged, alloc, "{\"radius\":2.5,\"type\":\"circle\"}"));
-    try testing.expectError(error.MissingUnionTag, json.decodeFromSliceLeaky(ShapeTagged, alloc, "{\"w\":1}"));
-    try testing.expectError(error.UnknownUnionVariant, json.decodeFromSliceLeaky(ShapeTagged, alloc, "{\"type\":\"hexagon\"}"));
+    try testing.expectError(error.MissingUnionTag, json.decodeFromSliceLeaky(ShapeTagged, alloc, "{\"radius\":2.5,\"type\":\"circle\"}", .{}));
+    try testing.expectError(error.MissingUnionTag, json.decodeFromSliceLeaky(ShapeTagged, alloc, "{\"w\":1}", .{}));
+    try testing.expectError(error.UnknownUnionVariant, json.decodeFromSliceLeaky(ShapeTagged, alloc, "{\"type\":\"hexagon\"}", .{}));
     // A void variant carrying fields is not that variant.
-    try testing.expectError(error.UnknownField, json.decodeFromSliceLeaky(ShapeTagged, alloc, "{\"type\":\"nothing\",\"x\":1}"));
+    try testing.expectError(error.UnknownField, json.decodeFromSliceLeaky(ShapeTagged, alloc, "{\"type\":\"nothing\",\"x\":1}", .{}));
 }
 
 test "as_tagged with a renamed tag field and unknown members" {
@@ -881,13 +939,13 @@ test "as_tagged with a renamed tag field and unknown members" {
 
     try expectEncodes(Event{ .click = .{ .x = 1, .y = 2 } }, "{\"kind\":\"click\",\"x\":1,\"y\":2}");
 
-    const e = try json.decodeFromSliceLeaky(Event, alloc, "{\"kind\":\"click\",\"x\":1,\"extra\":{\"a\":[1,2]},\"y\":2}");
+    const e = try json.decodeFromSliceLeaky(Event, alloc, "{\"kind\":\"click\",\"x\":1,\"extra\":{\"a\":[1,2]},\"y\":2}", .{});
     try testing.expectEqual(@as(i32, 1), e.click.x);
     try testing.expectEqual(@as(i32, 2), e.click.y);
 
     // Nested inside a struct, and inside a slice.
     const Wrapper = struct { events: []const Event };
-    const w = try json.decodeFromSliceLeaky(Wrapper, alloc, "{\"events\":[{\"kind\":\"click\",\"x\":1,\"y\":2},{\"kind\":\"key\",\"code\":65}]}");
+    const w = try json.decodeFromSliceLeaky(Wrapper, alloc, "{\"events\":[{\"kind\":\"click\",\"x\":1,\"y\":2},{\"kind\":\"key\",\"code\":65}]}", .{});
     try testing.expectEqual(@as(usize, 2), w.events.len);
     try testing.expectEqual(@as(u8, 65), w.events[1].key.code);
 }
@@ -900,7 +958,7 @@ test "as_tagged through a trickling reader" {
         var trickle = TrickleReader.init(buffer[0..buffer_len], doc);
         var arena: std.heap.ArenaAllocator = .init(a);
         defer arena.deinit();
-        const v = try json.decodeLeaky(ShapeTagged, arena.allocator(), &trickle.reader);
+        const v = try json.decodeLeaky(ShapeTagged, arena.allocator(), &trickle.reader, .{});
         try testing.expectEqual(@as(u32, 30000), v.rect.w);
         try testing.expectEqualStrings("a longer label \u{e9}", v.rect.label.?);
     }
@@ -913,22 +971,22 @@ test "integers too long for the fast path do not overflow" {
     const alloc = arena.allocator();
 
     // More digits than the fast path's u64 accumulator can hold.
-    try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky(u64, alloc, "99999999999999999999"));
-    try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky(i64, alloc, "-99999999999999999999"));
-    try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky(u8, alloc, "123456789012345678901234567890"));
+    try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky(u64, alloc, "99999999999999999999", .{}));
+    try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky(i64, alloc, "-99999999999999999999", .{}));
+    try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky(u8, alloc, "123456789012345678901234567890", .{}));
 
     // Wide enough destinations still decode exactly.
-    try testing.expectEqual(@as(u128, 99999999999999999999), try json.decodeFromSliceLeaky(u128, alloc, "99999999999999999999"));
-    try testing.expectEqual(@as(i128, -99999999999999999999), try json.decodeFromSliceLeaky(i128, alloc, "-99999999999999999999"));
+    try testing.expectEqual(@as(u128, 99999999999999999999), try json.decodeFromSliceLeaky(u128, alloc, "99999999999999999999", .{}));
+    try testing.expectEqual(@as(i128, -99999999999999999999), try json.decodeFromSliceLeaky(i128, alloc, "-99999999999999999999", .{}));
 
     // Reached through a struct and an array, where a terminator follows.
     const S = struct { n: u64 };
-    try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky(S, alloc, "{\"n\":99999999999999999999}"));
-    try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky([]const u64, alloc, "[1,99999999999999999999]"));
+    try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky(S, alloc, "{\"n\":99999999999999999999}", .{}));
+    try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky([]const u64, alloc, "[1,99999999999999999999]", .{}));
 
     // And the boundary either side of 19 digits stays exact.
-    try testing.expectEqual(@as(u64, 1234567890123456789), try json.decodeFromSliceLeaky(u64, alloc, "1234567890123456789"));
-    try testing.expectEqual(@as(u64, 12345678901234567890), try json.decodeFromSliceLeaky(u64, alloc, "12345678901234567890"));
+    try testing.expectEqual(@as(u64, 1234567890123456789), try json.decodeFromSliceLeaky(u64, alloc, "1234567890123456789", .{}));
+    try testing.expectEqual(@as(u64, 12345678901234567890), try json.decodeFromSliceLeaky(u64, alloc, "12345678901234567890", .{}));
 }
 
 /// Delivers up to `chunk` bytes per fill. `TrickleReader` hands over one byte
@@ -979,7 +1037,7 @@ test "floats survive a fill boundary inside the number" {
         for (1..c.doc.len + 1) |chunk| {
             var buffer: [64]u8 = undefined;
             var cr = ChunkReader.init(&buffer, c.doc, chunk);
-            const v = json.decodeLeaky(T, a, &cr.reader) catch |err| {
+            const v = json.decodeLeaky(T, a, &cr.reader, .{}) catch |err| {
                 std.debug.print("chunk={d} doc={s} -> {t}\n", .{ chunk, c.doc, err });
                 return err;
             };
@@ -993,7 +1051,7 @@ test "a malformed number is still rejected when fully buffered" {
     // The same code paths must keep rejecting these, where the window really
     // does contain everything.
     for ([_][]const u8{ "[12.]", "[12e]", "[1e+]", "[1E-]" }) |doc| {
-        try testing.expectError(error.InvalidNumber, json.decodeFromSliceLeaky([]const f64, a, doc));
+        try testing.expectError(error.InvalidNumber, json.decodeFromSliceLeaky([]const f64, a, doc, .{}));
     }
 }
 
@@ -1006,15 +1064,15 @@ test "decode and validate agree on numbers missing an integer part" {
     // JSON requires digits before the dot, and `decode` and `validate` have to
     // say the same thing about the same bytes.
     for ([_][]const u8{ "[.5]", "[-.5]", "[.5e2]", "[.0]" }) |doc| {
-        try testing.expectError(error.InvalidNumber, json.decodeFromSliceLeaky([]const f64, alloc, doc));
+        try testing.expectError(error.InvalidNumber, json.decodeFromSliceLeaky([]const f64, alloc, doc, .{}));
         try testing.expect(std.meta.isError(json.validateFromSlice(doc)));
     }
     const S = struct { x: f64 };
-    try testing.expectError(error.InvalidNumber, json.decodeFromSliceLeaky(S, alloc, "{\"x\":.5}"));
+    try testing.expectError(error.InvalidNumber, json.decodeFromSliceLeaky(S, alloc, "{\"x\":.5}", .{}));
 
     // A leading zero is still fine, and so is a fraction that has one.
-    try testing.expectEqual(@as(f64, 0.5), try json.decodeFromSliceLeaky(f64, alloc, "0.5"));
-    try testing.expectEqual(@as(f64, -0.5), try json.decodeFromSliceLeaky(f64, alloc, "-0.5"));
+    try testing.expectEqual(@as(f64, 0.5), try json.decodeFromSliceLeaky(f64, alloc, "0.5", .{}));
+    try testing.expectEqual(@as(f64, -0.5), try json.decodeFromSliceLeaky(f64, alloc, "-0.5", .{}));
 }
 
 test "fixed byte arrays round trip" {
@@ -1026,27 +1084,27 @@ test "fixed byte arrays round trip" {
     const S = struct { k: [4]u8 };
     // The encoder writes a [N]u8 as a string, so the decoder has to read one back.
     try expectEncodes(S{ .k = "abcd".* }, "{\"k\":\"abcd\"}");
-    const back = try json.decodeFromSliceLeaky(S, alloc, "{\"k\":\"abcd\"}");
+    const back = try json.decodeFromSliceLeaky(S, alloc, "{\"k\":\"abcd\"}", .{});
     try testing.expectEqualStrings("abcd", &back.k);
 
     // An array of numbers still works, as does std.json.
-    const also = try json.decodeFromSliceLeaky(S, alloc, "{\"k\":[97,98,99,100]}");
+    const also = try json.decodeFromSliceLeaky(S, alloc, "{\"k\":[97,98,99,100]}", .{});
     try testing.expectEqualStrings("abcd", &also.k);
 
     // Escapes and multi-byte characters count in bytes.
-    const esc = try json.decodeFromSliceLeaky([4]u8, alloc, "\"a\\nb\\t\"");
+    const esc = try json.decodeFromSliceLeaky([4]u8, alloc, "\"a\\nb\\t\"", .{});
     try testing.expectEqualStrings("a\nb\t", &esc);
-    const utf8 = try json.decodeFromSliceLeaky([4]u8, alloc, "\"\\u00e9\\u00e9\"");
+    const utf8 = try json.decodeFromSliceLeaky([4]u8, alloc, "\"\\u00e9\\u00e9\"", .{});
     try testing.expectEqualStrings("\u{e9}\u{e9}", &utf8);
 
     // A length that does not fit has nowhere to go.
-    try testing.expectError(error.LengthMismatch, json.decodeFromSliceLeaky([4]u8, alloc, "\"abc\""));
-    try testing.expectError(error.LengthMismatch, json.decodeFromSliceLeaky([4]u8, alloc, "\"abcde\""));
+    try testing.expectError(error.LengthMismatch, json.decodeFromSliceLeaky([4]u8, alloc, "\"abc\"", .{}));
+    try testing.expectError(error.LengthMismatch, json.decodeFromSliceLeaky([4]u8, alloc, "\"abcde\"", .{}));
 
     // Arrays of non-u8 are unaffected.
     const N = struct { v: [3]u16 };
     try expectEncodes(N{ .v = .{ 1, 2, 3 } }, "{\"v\":[1,2,3]}");
-    const n = try json.decodeFromSliceLeaky(N, alloc, "{\"v\":[1,2,3]}");
+    const n = try json.decodeFromSliceLeaky(N, alloc, "{\"v\":[1,2,3]}", .{});
     try testing.expectEqual([3]u16{ 1, 2, 3 }, n.v);
 }
 
@@ -1057,17 +1115,17 @@ test "negative zero decodes into unsigned types" {
     const alloc = arena.allocator();
 
     // -0 is a valid JSON zero and fits any unsigned type. std.json accepts it.
-    try testing.expectEqual(@as(u32, 0), try json.decodeFromSliceLeaky(u32, alloc, "-0"));
-    try testing.expectEqual(@as(u8, 0), try json.decodeFromSliceLeaky(u8, alloc, "-0"));
-    const in_array = try json.decodeFromSliceLeaky([]const u64, alloc, "[-0]");
+    try testing.expectEqual(@as(u32, 0), try json.decodeFromSliceLeaky(u32, alloc, "-0", .{}));
+    try testing.expectEqual(@as(u8, 0), try json.decodeFromSliceLeaky(u8, alloc, "-0", .{}));
+    const in_array = try json.decodeFromSliceLeaky([]const u64, alloc, "[-0]", .{});
     try testing.expectEqual(@as(u64, 0), in_array[0]);
 
     // Signed types are unaffected, and a real negative is still rejected.
-    try testing.expectEqual(@as(i32, 0), try json.decodeFromSliceLeaky(i32, alloc, "-0"));
-    try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky(u32, alloc, "-1"));
+    try testing.expectEqual(@as(i32, 0), try json.decodeFromSliceLeaky(i32, alloc, "-0", .{}));
+    try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky(u32, alloc, "-1", .{}));
 
     // -0.0 as a float keeps its sign bit.
-    const nz = try json.decodeFromSliceLeaky(f64, alloc, "-0.0");
+    const nz = try json.decodeFromSliceLeaky(f64, alloc, "-0.0", .{});
     try testing.expect(std.math.signbit(nz));
 }
 
@@ -1080,12 +1138,12 @@ test "a repeated field is an error" {
     // Taking the last value silently is a parser-differential hazard, and
     // std.json rejects duplicates too.
     const S = struct { a: u8, b: u8 };
-    try testing.expectError(error.DuplicateField, json.decodeFromSliceLeaky(S, alloc, "{\"a\":1,\"b\":2,\"a\":3}"));
-    try testing.expectError(error.DuplicateField, json.decodeFromSliceLeaky(S, alloc, "{\"a\":1,\"a\":1,\"b\":2}"));
+    try testing.expectError(error.DuplicateField, json.decodeFromSliceLeaky(S, alloc, "{\"a\":1,\"b\":2,\"a\":3}", .{}));
+    try testing.expectError(error.DuplicateField, json.decodeFromSliceLeaky(S, alloc, "{\"a\":1,\"a\":1,\"b\":2}", .{}));
 
     // Also when the repeat arrives out of declaration order, so it goes
     // through the general match rather than the expected-field fast path.
-    try testing.expectError(error.DuplicateField, json.decodeFromSliceLeaky(S, alloc, "{\"b\":2,\"a\":1,\"b\":3}"));
+    try testing.expectError(error.DuplicateField, json.decodeFromSliceLeaky(S, alloc, "{\"b\":2,\"a\":1,\"b\":3}", .{}));
 
     // A duplicated unknown key is still just an unknown key.
     const Skipping = struct {
@@ -1094,11 +1152,11 @@ test "a repeated field is an error" {
             return .{ .skip_unknown_fields = true };
         }
     };
-    const ok = try json.decodeFromSliceLeaky(Skipping, alloc, "{\"z\":1,\"a\":2,\"z\":3}");
+    const ok = try json.decodeFromSliceLeaky(Skipping, alloc, "{\"z\":1,\"a\":2,\"z\":3}", .{});
     try testing.expectEqual(@as(u8, 2), ok.a);
 
     // Distinct fields are unaffected, and nesting resets per object.
     const Nested = struct { inner: S, other: S };
-    const n = try json.decodeFromSliceLeaky(Nested, alloc, "{\"inner\":{\"a\":1,\"b\":2},\"other\":{\"a\":3,\"b\":4}}");
+    const n = try json.decodeFromSliceLeaky(Nested, alloc, "{\"inner\":{\"a\":1,\"b\":2},\"other\":{\"a\":3,\"b\":4}}", .{});
     try testing.expectEqual(@as(u8, 3), n.other.a);
 }
