@@ -83,23 +83,6 @@ The reader's buffer may be far smaller than the values being decoded. Strings,
 numbers and skipped values are all consumed incrementally, so a 1 MB string
 decodes fine through a 64-byte buffer. The buffer must hold at least 8 bytes.
 
-## Validating without decoding
-
-`json.validate` checks that a reader holds exactly one well-formed JSON
-document, without building anything from it:
-
-```zig
-try json.validate(&reader);
-try json.validateFromSlice(bytes);
-```
-
-It allocates nothing, and it accepts and rejects exactly what the decoder does,
-since it runs the same scanner, string, number and nesting code.
-
-Strings are validated as UTF-8 on the way in, so a decoded `[]const u8` is
-always well-formed. Pure-ASCII strings do not pay for the check: the scan
-detects non-ASCII bytes in the same pass that finds the end of the string.
-
 ## Struct options
 
 By default a struct is an object keyed by field name, and optional fields that
@@ -202,6 +185,10 @@ const Point = struct {
 Encoding a NaN or infinity as `null` matches what JavaScript's
 `JSON.stringify` does. Pass `.{ .non_finite = .fail }` to
 `encodeWithOptions` to get `error.NonFiniteFloat` instead.
+
+Strings are validated as UTF-8 on the way in, so a decoded `[]const u8` is
+always well-formed. Pure-ASCII strings do not pay for the check: the scan
+detects non-ASCII bytes in the same pass that finds the end of the string.
 
 ## Design
 
