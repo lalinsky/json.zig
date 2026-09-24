@@ -15,11 +15,13 @@ const Allocator = std.mem.Allocator;
 const json = @import("json.zig");
 const escapedLiteral = @import("encode.zig").escapedLiteral;
 
-pub const DecodeError = error{
+/// Errors from decoding a complete buffer, which can only turn out too short,
+/// never fail to read.
+pub const SliceDecodeError = error{
     /// A byte appeared where the grammar does not allow it.
     UnexpectedToken,
-    /// The document ended in the middle of a value.
-    UnexpectedEndOfInput,
+    /// The document ended before the value was complete.
+    EndOfStream,
     /// Trailing content after the top-level value.
     TrailingData,
     InvalidNumber,
@@ -54,8 +56,12 @@ pub const DecodeError = error{
     UnknownUnionVariant,
     /// An `as_tagged` union object did not start with its tag field.
     MissingUnionTag,
-    ReadFailed,
     OutOfMemory,
+};
+
+pub const DecodeError = SliceDecodeError || error{
+    /// The reader failed; the error it recorded says why.
+    ReadFailed,
 };
 
 /// Widest mantissa and decimal exponent for which Clinger's exact path holds:
@@ -261,10 +267,10 @@ pub const Decoder = struct {
     // ------------------------------------------------------------ scanning
 
     /// Errors from the reader, mapped onto our set. `EndOfStream` in the
-    /// middle of a value is malformed input, not a read failure.
+    /// middle of a value means the document was cut short.
     inline fn mapRead(err: Reader.Error) DecodeError {
         return switch (err) {
-            error.EndOfStream => error.UnexpectedEndOfInput,
+            error.EndOfStream => error.EndOfStream,
             error.ReadFailed => error.ReadFailed,
         };
     }
@@ -366,7 +372,10 @@ pub const Decoder = struct {
 
     fn expectLiteralSlow(d: *Decoder, comptime lit: []const u8) DecodeError!bool {
         const window = d.reader.peek(lit.len) catch |err| switch (err) {
-            error.EndOfStream => return false,
+            error.EndOfStream => {
+                if (std.mem.startsWith(u8, lit, d.reader.buffered())) return error.EndOfStream;
+                return false;
+            },
             error.ReadFailed => return error.ReadFailed,
         };
         if (!std.mem.eql(u8, window[0..lit.len], lit)) return false;
@@ -473,8 +482,13 @@ pub const Decoder = struct {
             }
             d.reader.fillMore() catch |err| switch (err) {
                 error.EndOfStream => {
-                    if (len == 0) return error.UnexpectedEndOfInput;
-                    return buf[0..len];
+                    // No number ends in a sign, a point or an exponent
+                    // marker, so one that stops there was cut short.
+                    if (len == 0) return error.EndOfStream;
+                    switch (buf[len - 1]) {
+                        '-', '+', '.', 'e', 'E' => return error.EndOfStream,
+                        else => return buf[0..len],
+                    }
                 },
                 error.ReadFailed => return error.ReadFailed,
             };
@@ -761,7 +775,10 @@ pub const Decoder = struct {
                 var code: u21 = first;
                 if (first >= 0xd800 and first <= 0xdbff) {
                     const pair = d.reader.peek(2) catch |err| switch (err) {
-                        error.EndOfStream => return error.InvalidSurrogatePair,
+                        error.EndOfStream => {
+                            if (std.mem.startsWith(u8, "\\u", d.reader.buffered())) return error.EndOfStream;
+                            return error.InvalidSurrogatePair;
+                        },
                         error.ReadFailed => return error.ReadFailed,
                     };
                     if (pair[0] != '\\' or pair[1] != 'u') return error.InvalidSurrogatePair;

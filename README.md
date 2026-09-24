@@ -89,6 +89,11 @@ The reader's buffer may be far smaller than the values being decoded. Strings,
 numbers and skipped values are all consumed incrementally, so a 1 MB string
 decodes fine through a 64-byte buffer. The buffer must hold at least 8 bytes.
 
+A document that ends before its value is complete is `error.EndOfStream`,
+whether it came from a slice or a reader. `error.ReadFailed` means the reader
+itself failed, and the reader's own error field says why. The slice functions
+return `json.SliceDecodeError`, which leaves `ReadFailed` out.
+
 ## Struct options
 
 By default a struct is an object keyed by field name, and optional fields that

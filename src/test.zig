@@ -1160,3 +1160,34 @@ test "a repeated field is an error" {
     const n = try json.decodeFromSliceLeaky(Nested, alloc, "{\"inner\":{\"a\":1,\"b\":2},\"other\":{\"a\":3,\"b\":4}}", .{});
     try testing.expectEqual(@as(u8, 3), n.other.a);
 }
+
+test "every truncation of a document is EndOfStream" {
+    const T = struct {
+        flag: bool,
+        none: ?u32,
+        n: i64,
+        x: f64,
+        s: []const u8,
+        list: []const u32,
+    };
+    const doc =
+        \\{"flag":false,"none":null,"n":-123,"x":1.5e3,
+        \\"s":"a\"b\u00e9\ud83d\ude00 é","list":[1,2,3]}
+    ;
+    var buf: [4096]u8 = undefined;
+    for (0..doc.len) |len| {
+        var fba: std.heap.FixedBufferAllocator = .init(&buf);
+        try testing.expectError(error.EndOfStream, json.decodeFromSliceLeaky(T, fba.allocator(), doc[0..len], .{}));
+        try testing.expectError(error.EndOfStream, json.validateFromSlice(doc[0..len]));
+
+        var rbuf: [8]u8 = undefined;
+        var trickle: TrickleReader = .init(&rbuf, doc[0..len]);
+        fba.reset();
+        try testing.expectError(error.EndOfStream, json.decodeLeaky(T, fba.allocator(), &trickle.reader, .{}));
+    }
+
+    // Input that is wrong before it runs out keeps its own error.
+    try testing.expectError(error.UnexpectedToken, json.validateFromSlice("tx"));
+    try testing.expectError(error.InvalidSurrogatePair, json.validateFromSlice("\"\\ud83dx"));
+    try testing.expectError(error.InvalidNumber, json.validateFromSlice("01"));
+}
