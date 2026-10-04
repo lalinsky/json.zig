@@ -27,7 +27,7 @@ const json = b.dependency("json", .{
 exe.root_module.addImport("json", json.module("json"));
 ```
 
-Requires Zig 0.16.0.
+Requires Zig 0.16 or 0.17.
 
 ## Usage
 

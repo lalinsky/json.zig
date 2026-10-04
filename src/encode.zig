@@ -8,6 +8,7 @@
 const std = @import("std");
 const Writer = std.Io.Writer;
 const json = @import("json.zig");
+const compat = @import("compat.zig");
 
 pub const EncodeError = Writer.Error || error{NonFiniteFloat};
 
@@ -151,7 +152,7 @@ fn encodeUnion(comptime T: type, value: T, w: *Writer, opts: EncodeOptions) Enco
 /// has at least one member.
 fn encodeStructFieldsAfter(comptime T: type, value: T, w: *Writer, opts: EncodeOptions) EncodeError!void {
     const options = comptime json.structOptions(T);
-    inline for (@typeInfo(T).@"struct".fields) |f| {
+    inline for (comptime compat.structFields(T)) |f| {
         const omit = options.omit_null_fields and
             @typeInfo(f.type) == .optional and
             @field(value, f.name) == null;
@@ -201,14 +202,14 @@ fn fieldKey(comptime T: type, comptime field_name: []const u8) []const u8 {
 fn canOmitFields(comptime T: type) bool {
     const options = comptime json.structOptions(T);
     if (!options.omit_null_fields) return false;
-    for (@typeInfo(T).@"struct".fields) |f| {
+    for (compat.structFields(T)) |f| {
         if (@typeInfo(f.type) == .optional) return true;
     }
     return false;
 }
 
 fn encodeStruct(comptime T: type, value: T, w: *Writer, opts: EncodeOptions) EncodeError!void {
-    const fields = @typeInfo(T).@"struct".fields;
+    const fields = comptime compat.structFields(T);
     const options = comptime json.structOptions(T);
 
     try w.writeByte('{');
