@@ -376,7 +376,7 @@ test "decode from a trickling stream at every buffer size" {
 
 test "a string far larger than the reader buffer" {
     const a = std.testing.allocator;
-    const long = "x" ** 500;
+    const long = &@as([500]u8, @splat('x'));
     const doc = "{\"s\":\"" ++ long ++ "\"}";
     const T = struct { s: []const u8 };
 
@@ -392,7 +392,7 @@ test "a string far larger than the reader buffer" {
 
 test "a skipped value far larger than the reader buffer" {
     const a = std.testing.allocator;
-    const long = "y" ** 400;
+    const long = &@as([400]u8, @splat('y'));
     const doc = "{\"skipped\":{\"deep\":[\"" ++ long ++ "\",1,2]},\"keep\":5}";
     const T = struct {
         keep: u8,
@@ -416,7 +416,7 @@ test "an object key longer than any field name is handled without allocating" {
             return .{ .skip_unknown_fields = true };
         }
     };
-    const doc = "{\"" ++ ("k" ** 300) ++ "\":1,\"id\":2}";
+    const doc = "{\"" ++ @as([300]u8, @splat('k')) ++ "\":1,\"id\":2}";
     var buffer: [16]u8 = undefined;
     var trickle = TrickleReader.init(&buffer, doc);
     const v = try json.decodeLeaky(T, a, &trickle.reader, .{});

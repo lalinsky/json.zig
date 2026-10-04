@@ -35,11 +35,20 @@ pub fn build(b: *std.Build) !void {
     conformance.root_module.addImport("json", json_module);
 
     const options = b.addOptions();
-    options.addOptionPath("suite_path", b.path("test/JSONTestSuite/test_parsing"));
+    const suite_path = b.path("test/JSONTestSuite/test_parsing");
+    if (comptime @hasDecl(std.Build.Step.Options, "addOptionPathDirectory")) {
+        options.addOptionPathDirectory("suite_path", suite_path);
+    } else {
+        options.addOptionPath("suite_path", suite_path);
+    }
     conformance.root_module.addOptions("build_options", options);
 
     const run_conformance = b.addRunArtifact(conformance);
-    if (b.args) |args| run_conformance.addArgs(args);
+    if (comptime @hasDecl(std.Build.Step.Run, "addPassthruArgs")) {
+        run_conformance.addPassthruArgs();
+    } else if (b.args) |args| {
+        run_conformance.addArgs(args);
+    }
 
     const conformance_step = b.step("conformance", "Run the JSONTestSuite conformance suite");
     conformance_step.dependOn(&run_conformance.step);

@@ -13,6 +13,7 @@ const std = @import("std");
 const Reader = std.Io.Reader;
 const Allocator = std.mem.Allocator;
 const json = @import("json.zig");
+const compat = @import("compat.zig");
 const escapedLiteral = @import("encode.zig").escapedLiteral;
 
 pub const DecodeError = error{
@@ -858,9 +859,9 @@ pub const Decoder = struct {
     fn enumValue(d: *Decoder, comptime T: type) DecodeError!T {
         var buf: [maxTagLen(T)]u8 = undefined;
         const name = (try d.boundedString(&buf)) orelse return error.InvalidEnumTag;
-        inline for (@typeInfo(T).@"enum".fields) |f| {
-            if (name.len == f.name.len and std.mem.eql(u8, name, f.name)) {
-                return @field(T, f.name);
+        inline for (comptime std.meta.fieldNames(T)) |tag_name| {
+            if (name.len == tag_name.len and std.mem.eql(u8, name, tag_name)) {
+                return @field(T, tag_name);
             }
         }
         return error.InvalidEnumTag;
@@ -882,7 +883,7 @@ pub const Decoder = struct {
                 try d.expectByte(':');
 
                 var result: ?T = null;
-                inline for (info.fields) |f| {
+                inline for (comptime compat.unionFields(T)) |f| {
                     if (result == null and name.len == f.name.len and std.mem.eql(u8, name, f.name)) {
                         result = @unionInit(T, f.name, try d.value(f.type));
                     }
@@ -904,7 +905,7 @@ pub const Decoder = struct {
                 const name = (try d.boundedString(&name_buf)) orelse return error.UnknownUnionVariant;
 
                 var result: ?T = null;
-                inline for (info.fields) |f| {
+                inline for (comptime compat.unionFields(T)) |f| {
                     if (result == null and name.len == f.name.len and std.mem.eql(u8, name, f.name)) {
                         if (f.type == void) {
                             // Nothing to hoist, so run the member loop over an
@@ -958,10 +959,10 @@ pub const Decoder = struct {
         comptime options: json.StructOptions,
         comptime continuing: bool,
     ) DecodeError!T {
-        const fields = @typeInfo(T).@"struct".fields;
+        const fields = comptime compat.structFields(T);
 
         var result: T = undefined;
-        var seen = std.bit_set.StaticBitSet(fields.len).initEmpty();
+        var seen = std.bit_set.StaticBitSet(fields.len).empty;
 
         const has_members = if (continuing) switch (try d.peekByte()) {
             ',' => blk: {
@@ -1224,7 +1225,7 @@ fn jsonKey(comptime T: type, comptime field_name: []const u8) []const u8 {
 fn maxKeyLen(comptime T: type) usize {
     comptime {
         var m: usize = 1;
-        for (@typeInfo(T).@"struct".fields) |f| m = @max(m, jsonKey(T, f.name).len);
+        for (compat.structFields(T)) |f| m = @max(m, jsonKey(T, f.name).len);
         return m;
     }
 }
@@ -1232,15 +1233,7 @@ fn maxKeyLen(comptime T: type) usize {
 fn maxTagLen(comptime T: type) usize {
     comptime {
         var m: usize = 1;
-        switch (@typeInfo(T)) {
-            .@"enum" => |info| for (info.fields) |f| {
-                m = @max(m, f.name.len);
-            },
-            .@"union" => |info| for (info.fields) |f| {
-                m = @max(m, f.name.len);
-            },
-            else => unreachable,
-        }
+        for (std.meta.fieldNames(T)) |name| m = @max(m, name.len);
         return m;
     }
 }
