@@ -256,7 +256,7 @@ fn encodeStruct(comptime T: type, value: T, w: *Writer, opts: EncodeOptions) Enc
 /// digits for f80/f128, and would turn a finite value that exceeds f64's range
 /// into an infinity - reported as `null` or an error for a number that is
 /// perfectly representable in its own type.
-fn writeFloat(comptime T: type, value: T, w: *Writer, opts: EncodeOptions) EncodeError!void {
+fn writeFloat(comptime T: type, value: T, noalias w: *Writer, opts: EncodeOptions) EncodeError!void {
     const Float = if (T == comptime_float) f64 else T;
     const v: Float = value;
     if (!std.math.isFinite(v)) {
@@ -332,41 +332,74 @@ const digits2: [200]u8 = blk: {
 
 /// Two decimal digits per iteration into a stack buffer, written back to
 /// front. Same output as `print("{}")` without the formatting machinery.
-fn writeInt(comptime T: type, value: T, w: *Writer) Writer.Error!void {
+/// Writes an integer in decimal. When the buffer has room for the longest
+/// value of the type, the digits are written straight into it; formatting
+/// into a temporary buffer and copying that out is a `memcpy` call per number.
+fn writeInt(comptime T: type, value: T, noalias w: *Writer) Writer.Error!void {
     const Int = if (T == comptime_int) i64 else T;
-    const bits = @typeInfo(Int).int.bits;
-    if (bits > 64) return w.print("{}", .{value});
+    const info = @typeInfo(Int).int;
+    if (info.bits > 64) return w.print("{}", .{value});
 
     const v: Int = value;
     const neg = v < 0;
-    var x: u64 = if (neg) @intCast(-@as(i128, v)) else @intCast(v);
+    const max_len = comptime countDigits(@abs(std.math.maxInt(Int))) + @intFromBool(info.signedness == .signed);
+    if (w.buffer.len - w.end < max_len) {
+        @branchHint(.unlikely);
+        return w.printInt(v, 10, .lower, .{});
+    }
 
-    var buf: [21]u8 = undefined;
-    var i: usize = buf.len;
-    while (x >= 100) {
-        const r: usize = @intCast(x % 100);
-        x /= 100;
+    var x: u64 = @abs(v);
+    const len = countDigits(x) + @intFromBool(neg);
+    const dest = w.buffer[w.end..][0..len];
+    if (neg) dest[0] = '-';
+    var i = len;
+    while (x >= 100) : (x /= 100) {
         i -= 2;
-        buf[i..][0..2].* = digits2[r * 2 ..][0..2].*;
+        dest[i..][0..2].* = digits2[@as(usize, @intCast(x % 100)) * 2 ..][0..2].*;
     }
-    if (x >= 10) {
-        i -= 2;
-        buf[i..][0..2].* = digits2[@as(usize, @intCast(x)) * 2 ..][0..2].*;
+    if (x < 10) {
+        dest[i - 1] = '0' + @as(u8, @intCast(x));
     } else {
-        i -= 1;
-        buf[i] = '0' + @as(u8, @intCast(x));
+        dest[i - 2 ..][0..2].* = digits2[@as(usize, @intCast(x)) * 2 ..][0..2].*;
     }
-    if (neg) {
-        i -= 1;
-        buf[i] = '-';
+    w.end += len;
+}
+
+fn countDigits(value: u64) usize {
+    var count: usize = 1;
+    var limit: u64 = 10;
+    while (value >= limit) {
+        count += 1;
+        limit = std.math.mul(u64, limit, 10) catch break;
     }
-    try writeAll(w, buf[i..]);
+    return count;
 }
 
 /// Escapes `"`, `\` and the C0 control characters; everything else, high bytes
-/// included, passes through untouched. Chunks with nothing to escape are
-/// emitted as a single run rather than byte by byte.
-pub fn writeString(str: []const u8, w: *Writer) Writer.Error!void {
+/// included, passes through untouched.
+///
+/// Strings shorter than a vector never reach the vector loop, and most strings
+/// in a document are short, so those are escaped inline. A call costs more
+/// than the scan: it sets up the vector constants and makes the writer's state
+/// go through memory.
+pub inline fn writeString(str: []const u8, noalias w: *Writer) Writer.Error!void {
+    if (str.len >= 16) return writeStringLong(str, w);
+
+    try writeByte(w, '"');
+    var cursor: usize = 0;
+    for (str, 0..) |c, i| {
+        if (!needs_escape[c]) continue;
+        try writeAll(w, str[cursor..i]);
+        try writeEscape(c, w);
+        cursor = i + 1;
+    }
+    try writeAll(w, str[cursor..]);
+    try writeByte(w, '"');
+}
+
+/// Chunks with nothing to escape are emitted as a single run rather than byte
+/// by byte.
+noinline fn writeStringLong(str: []const u8, noalias w: *Writer) Writer.Error!void {
     try writeByte(w, '"');
 
     const V = @Vector(16, u8);
@@ -391,7 +424,7 @@ pub fn writeString(str: []const u8, w: *Writer) Writer.Error!void {
     }
     while (i < str.len) : (i += 1) {
         const c = str[i];
-        if (c == '"' or c == '\\' or c < 0x20) {
+        if (needs_escape[c]) {
             try writeAll(w, str[cursor..i]);
             try writeEscape(c, w);
             cursor = i + 1;
@@ -401,7 +434,15 @@ pub fn writeString(str: []const u8, w: *Writer) Writer.Error!void {
     try writeByte(w, '"');
 }
 
-fn writeEscape(c: u8, w: *Writer) Writer.Error!void {
+const needs_escape = blk: {
+    var table: [256]bool = @splat(false);
+    for (0..0x20) |c| table[c] = true;
+    table['"'] = true;
+    table['\\'] = true;
+    break :blk table;
+};
+
+fn writeEscape(c: u8, noalias w: *Writer) Writer.Error!void {
     switch (c) {
         '\\' => try writeAll(w, "\\\\"),
         '"' => try writeAll(w, "\\\""),
