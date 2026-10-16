@@ -151,6 +151,7 @@ fn encodeUnion(comptime T: type, value: T, w: *Writer, opts: EncodeOptions) Enco
 /// Writes a struct's members as `,"name":value`, for an object that already
 /// has at least one member.
 fn encodeStructFieldsAfter(comptime T: type, value: T, w: *Writer, opts: EncodeOptions) EncodeError!void {
+    @setEvalBranchQuota(comptime fieldsBranchQuota(T));
     const options = comptime json.structOptions(T);
     inline for (comptime compat.structFields(T)) |f| {
         const omit = options.omit_null_fields and
@@ -189,6 +190,20 @@ pub fn escapedLiteral(comptime s: []const u8) []const u8 {
     }
 }
 
+/// Inline loops over a struct's fields spend comptime branches on every field
+/// (escaping its key, among other things), and all of it counts against the
+/// enclosing function's quota. A struct with a few dozen fields runs past the
+/// default of 1000, so functions looping over fields raise it to this.
+pub fn fieldsBranchQuota(comptime T: type) u32 {
+    comptime {
+        const fields = compat.structFields(T);
+        @setEvalBranchQuota(1000 + 10 * fields.len);
+        var n: u32 = 1000;
+        for (fields) |f| n += 100 + 10 * @as(u32, @intCast(f.name.len));
+        return n;
+    }
+}
+
 fn fieldKey(comptime T: type, comptime field_name: []const u8) []const u8 {
     const options = comptime json.structOptions(T);
     return switch (options.key) {
@@ -209,6 +224,7 @@ fn canOmitFields(comptime T: type) bool {
 }
 
 fn encodeStruct(comptime T: type, value: T, w: *Writer, opts: EncodeOptions) EncodeError!void {
+    @setEvalBranchQuota(comptime fieldsBranchQuota(T));
     const fields = comptime compat.structFields(T);
     const options = comptime json.structOptions(T);
 

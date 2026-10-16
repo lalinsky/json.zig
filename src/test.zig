@@ -302,6 +302,93 @@ test "nested structs, slices and fixed arrays" {
     try testing.expectEqual(@as(usize, 0), v.empty.len);
 }
 
+test "single-item pointers, including recursive ones" {
+    const Node = struct {
+        value: u32,
+        next: ?*@This(),
+
+        pub fn jsonFormat() json.StructOptions {
+            return .{ .omit_null_fields = false };
+        }
+    };
+    const doc = "{\"value\":1,\"next\":{\"value\":2,\"next\":null}}";
+
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const v = try json.decodeFromSliceLeaky(Node, arena.allocator(), doc, .{});
+    try testing.expectEqual(@as(u32, 1), v.value);
+    try testing.expectEqual(@as(u32, 2), v.next.?.value);
+    try testing.expectEqual(@as(?*Node, null), v.next.?.next);
+    try expectEncodes(v, doc);
+
+    const p = try json.decodeFromSliceLeaky(*const u32, arena.allocator(), "7", .{});
+    try testing.expectEqual(@as(u32, 7), p.*);
+}
+
+test "a struct with many fields and a jsonFormat" {
+    // The per-field comptime work used to exhaust the default branch quota.
+    const Wide = struct {
+        field_number_0: u8 = 0,
+        field_number_1: u8 = 0,
+        field_number_2: u8 = 0,
+        field_number_3: u8 = 0,
+        field_number_4: u8 = 0,
+        field_number_5: u8 = 0,
+        field_number_6: u8 = 0,
+        field_number_7: u8 = 0,
+        field_number_8: u8 = 0,
+        field_number_9: u8 = 0,
+        field_number_10: u8 = 0,
+        field_number_11: u8 = 0,
+        field_number_12: u8 = 0,
+        field_number_13: u8 = 0,
+        field_number_14: u8 = 0,
+        field_number_15: u8 = 0,
+        field_number_16: u8 = 0,
+        field_number_17: u8 = 0,
+        field_number_18: u8 = 0,
+        field_number_19: u8 = 0,
+        field_number_20: u8 = 0,
+        field_number_21: u8 = 0,
+        field_number_22: u8 = 0,
+        field_number_23: u8 = 0,
+        field_number_24: u8 = 0,
+        field_number_25: u8 = 0,
+        field_number_26: u8 = 0,
+        field_number_27: u8 = 0,
+        field_number_28: u8 = 0,
+        field_number_29: u8 = 0,
+        field_number_30: u8 = 0,
+        field_number_31: u8 = 0,
+        field_number_32: u8 = 0,
+        field_number_33: u8 = 0,
+        field_number_34: u8 = 0,
+        field_number_35: u8 = 0,
+        field_number_36: u8 = 0,
+        field_number_37: u8 = 0,
+        field_number_38: u8 = 0,
+        field_number_39: u8 = 0,
+        field_number_40: u8 = 0,
+        field_number_41: u8 = 0,
+        field_number_42: u8 = 0,
+        field_number_43: u8 = 0,
+        field_number_44: u8 = 0,
+        field_number_45: u8 = 0,
+        field_number_46: u8 = 0,
+        field_number_47: u8 = 0,
+
+        pub fn jsonFormat() json.StructOptions {
+            return .{ .omit_null_fields = false };
+        }
+    };
+
+    var buf: [1024]u8 = undefined;
+    const doc = try encodeToBuf(Wide{ .field_number_47 = 9 }, &buf);
+    const v = try json.decodeFromSlice(Wide, std.testing.allocator, doc, .{});
+    defer v.deinit();
+    try testing.expectEqual(@as(u8, 9), v.value.field_number_47);
+}
+
 test "enums and tagged unions" {
     const Color = enum { red, green, blue };
     const Shape = union(enum) { circle: f64, rect: [2]u32, none };
