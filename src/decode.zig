@@ -420,10 +420,18 @@ pub const Decoder = struct {
                 }
                 return d.fixedArray(T, arr.child, arr.len);
             },
-            .pointer => |ptr| {
-                if (ptr.size != .slice) @compileError("json: cannot decode " ++ @typeName(T));
-                if (ptr.child == u8) return d.string();
-                return d.slice(T, ptr.child);
+            .pointer => |ptr| switch (ptr.size) {
+                .slice => {
+                    if (ptr.child == u8) return d.string();
+                    return d.slice(T, ptr.child);
+                },
+                .one => {
+                    const p = try d.gpa.create(ptr.child);
+                    errdefer d.gpa.destroy(p);
+                    p.* = try d.value(ptr.child);
+                    return p;
+                },
+                else => @compileError("json: cannot decode " ++ @typeName(T)),
             },
             else => @compileError("json: cannot decode " ++ @typeName(T)),
         }

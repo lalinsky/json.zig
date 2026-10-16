@@ -302,6 +302,29 @@ test "nested structs, slices and fixed arrays" {
     try testing.expectEqual(@as(usize, 0), v.empty.len);
 }
 
+test "single-item pointers, including recursive ones" {
+    const Node = struct {
+        value: u32,
+        next: ?*@This(),
+
+        pub fn jsonFormat() json.StructOptions {
+            return .{ .omit_null_fields = false };
+        }
+    };
+    const doc = "{\"value\":1,\"next\":{\"value\":2,\"next\":null}}";
+
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const v = try json.decodeFromSliceLeaky(Node, arena.allocator(), doc, .{});
+    try testing.expectEqual(@as(u32, 1), v.value);
+    try testing.expectEqual(@as(u32, 2), v.next.?.value);
+    try testing.expectEqual(@as(?*Node, null), v.next.?.next);
+    try expectEncodes(v, doc);
+
+    const p = try json.decodeFromSliceLeaky(*const u32, arena.allocator(), "7", .{});
+    try testing.expectEqual(@as(u32, 7), p.*);
+}
+
 test "a struct with many fields and a jsonFormat" {
     // The per-field comptime work used to exhaust the default branch quota.
     const Wide = struct {
