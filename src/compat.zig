@@ -1,8 +1,8 @@
-//! Type reflection helpers that work on both Zig 0.16 and 0.17.
+//! Helpers that work on both Zig 0.16 and 0.17.
 //!
 //! Zig 0.17 changed `@typeInfo` for containers from a slice of field structs
 //! (`fields`) to parallel slices (`field_names`, `field_types`,
-//! `field_attrs`). These helpers present the 0.16 shape on both.
+//! `field_attrs`). The reflection helpers present the 0.16 shape on both.
 
 const std = @import("std");
 
@@ -57,4 +57,15 @@ pub fn unionFields(comptime T: type) []const UnionField {
         const final = fields;
         break :blk &final;
     };
+}
+
+/// Bit-casts a bool vector to an integer with element `i` in bit `i`, so that
+/// `@ctz` finds the first true element. Zig 0.16 bit-casts element 0 to the
+/// most significant bit on big-endian targets, while 0.17 always puts it in
+/// the least significant one.
+pub inline fn vectorMask(comptime n: usize, v: @Vector(n, bool)) @Int(.unsigned, n) {
+    const Mask = @Int(.unsigned, n);
+    const reversed = comptime @as(Mask, @bitCast(std.simd.iota(u8, n) == @as(@Vector(n, u8), @splat(0)))) != 1;
+    const mask: Mask = @bitCast(v);
+    return if (reversed) @bitReverse(mask) else mask;
 }
