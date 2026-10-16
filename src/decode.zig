@@ -641,7 +641,7 @@ pub const Decoder = struct {
         while (i + 16 <= window.len) : (i += 16) {
             const chunk: V = window[i..][0..16].*;
             acc |= chunk;
-            const hits: u16 = @bitCast((chunk == quote) | (chunk == backslash) | (chunk < space));
+            const hits = compat.vectorMask(16, (chunk == quote) | (chunk == backslash) | (chunk < space));
             if (hits != 0) return .{ .end = i + @ctz(hits), .non_ascii = @reduce(.Or, acc) >= 0x80 };
         }
         var tail: u8 = @reduce(.Or, acc);

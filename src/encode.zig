@@ -322,7 +322,7 @@ pub fn writeString(str: []const u8, w: *Writer) Writer.Error!void {
     var i: usize = 0;
     while (i + 16 <= str.len) {
         const chunk: V = str[i..][0..16].*;
-        const hits: u16 = @bitCast((chunk == quote) | (chunk == backslash) | (chunk < space));
+        const hits = compat.vectorMask(16, (chunk == quote) | (chunk == backslash) | (chunk < space));
         if (hits == 0) {
             i += 16;
             continue;
