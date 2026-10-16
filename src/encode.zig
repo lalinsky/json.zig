@@ -30,28 +30,28 @@ pub const Encoder = struct {
     }
 
     pub fn beginObject(self: Encoder) Writer.Error!void {
-        return self.writer.writeByte('{');
+        return writeByte(self.writer, '{');
     }
 
     pub fn endObject(self: Encoder) Writer.Error!void {
-        return self.writer.writeByte('}');
+        return writeByte(self.writer, '}');
     }
 
     pub fn beginArray(self: Encoder) Writer.Error!void {
-        return self.writer.writeByte('[');
+        return writeByte(self.writer, '[');
     }
 
     pub fn endArray(self: Encoder) Writer.Error!void {
-        return self.writer.writeByte(']');
+        return writeByte(self.writer, ']');
     }
 
     pub fn comma(self: Encoder) Writer.Error!void {
-        return self.writer.writeByte(',');
+        return writeByte(self.writer, ',');
     }
 
     pub fn writeKey(self: Encoder, key: []const u8) Writer.Error!void {
         try writeString(key, self.writer);
-        try self.writer.writeByte(':');
+        try writeByte(self.writer, ':');
     }
 
     pub fn writeStringValue(self: Encoder, s: []const u8) Writer.Error!void {
@@ -70,13 +70,13 @@ pub fn encodeValue(
     }
 
     switch (@typeInfo(T)) {
-        .void, .null => try w.writeAll("null"),
-        .bool => try w.writeAll(if (value) "true" else "false"),
+        .void, .null => try writeAll(w, "null"),
+        .bool => try writeAll(w, if (value) "true" else "false"),
         .int, .comptime_int => try writeInt(T, value, w),
         .float, .comptime_float => try writeFloat(T, value, w, opts),
         .optional => {
             if (value) |payload| return encodeValue(@TypeOf(payload), payload, w, opts);
-            try w.writeAll("null");
+            try writeAll(w, "null");
         },
         .@"enum" => try writeString(@tagName(value), w),
         .enum_literal => try writeString(@tagName(value), w),
@@ -105,12 +105,12 @@ pub fn encodeValue(
 }
 
 fn encodeSlice(comptime Child: type, items: []const Child, w: *Writer, opts: EncodeOptions) EncodeError!void {
-    try w.writeByte('[');
+    try writeByte(w, '[');
     for (items, 0..) |item, i| {
-        if (i != 0) try w.writeByte(',');
+        if (i != 0) try writeByte(w, ',');
         try encodeValue(Child, item, w, opts);
     }
-    try w.writeByte(']');
+    try writeByte(w, ']');
 }
 
 fn encodeUnion(comptime T: type, value: T, w: *Writer, opts: EncodeOptions) EncodeError!void {
@@ -119,14 +119,14 @@ fn encodeUnion(comptime T: type, value: T, w: *Writer, opts: EncodeOptions) Enco
 
     switch (comptime json.unionFormat(T)) {
         .as_object => {
-            try w.writeByte('{');
+            try writeByte(w, '{');
             switch (value) {
                 inline else => |payload, tag| {
-                    try w.writeAll(comptime "\"" ++ escapedLiteral(@tagName(tag)) ++ "\":");
+                    try writeAll(w, comptime "\"" ++ escapedLiteral(@tagName(tag)) ++ "\":");
                     try encodeValue(@TypeOf(payload), payload, w, opts);
                 },
             }
-            try w.writeByte('}');
+            try writeByte(w, '}');
         },
         .as_tagged => |tagged| {
             switch (value) {
@@ -136,12 +136,12 @@ fn encodeUnion(comptime T: type, value: T, w: *Writer, opts: EncodeOptions) Enco
                         @compileError("json: as_tagged needs a struct or void payload, but " ++
                             @typeName(T) ++ "." ++ @tagName(tag) ++ " is " ++ @typeName(Payload));
                     }
-                    try w.writeAll(comptime "{\"" ++ escapedLiteral(tagged.tag_field) ++
+                    try writeAll(w, comptime "{\"" ++ escapedLiteral(tagged.tag_field) ++
                         "\":\"" ++ escapedLiteral(@tagName(tag)) ++ "\"");
                     // The tag is always present, so every hoisted field is
                     // preceded by a comma - no first-member bookkeeping.
                     if (Payload != void) try encodeStructFieldsAfter(Payload, payload, w, opts);
-                    try w.writeByte('}');
+                    try writeByte(w, '}');
                 },
             }
         },
@@ -158,7 +158,7 @@ fn encodeStructFieldsAfter(comptime T: type, value: T, w: *Writer, opts: EncodeO
             @typeInfo(f.type) == .optional and
             @field(value, f.name) == null;
         if (!omit) {
-            try w.writeAll(comptime ",\"" ++ escapedLiteral(fieldKey(T, f.name)) ++ "\":");
+            try writeAll(w, comptime ",\"" ++ escapedLiteral(fieldKey(T, f.name)) ++ "\":");
             try encodeValue(f.type, @field(value, f.name), w, opts);
         }
     }
@@ -228,11 +228,11 @@ fn encodeStruct(comptime T: type, value: T, w: *Writer, opts: EncodeOptions) Enc
     const fields = comptime compat.structFields(T);
     const options = comptime json.structOptions(T);
 
-    try w.writeByte('{');
+    try writeByte(w, '{');
     if (comptime !canOmitFields(T)) {
         inline for (fields, 0..) |f, i| {
             const prefix = comptime (if (i == 0) "\"" else ",\"") ++ escapedLiteral(fieldKey(T, f.name)) ++ "\":";
-            try w.writeAll(prefix);
+            try writeAll(w, prefix);
             try encodeValue(f.type, @field(value, f.name), w, opts);
         }
     } else {
@@ -242,14 +242,14 @@ fn encodeStruct(comptime T: type, value: T, w: *Writer, opts: EncodeOptions) Enc
                 @typeInfo(f.type) == .optional and
                 @field(value, f.name) == null;
             if (!omit) {
-                if (!first) try w.writeByte(',');
+                if (!first) try writeByte(w, ',');
                 first = false;
-                try w.writeAll(comptime "\"" ++ escapedLiteral(fieldKey(T, f.name)) ++ "\":");
+                try writeAll(w, comptime "\"" ++ escapedLiteral(fieldKey(T, f.name)) ++ "\":");
                 try encodeValue(f.type, @field(value, f.name), w, opts);
             }
         }
     }
-    try w.writeByte('}');
+    try writeByte(w, '}');
 }
 
 /// Formats at the value's own precision. Widening to f64 first would lose
@@ -261,7 +261,7 @@ fn writeFloat(comptime T: type, value: T, w: *Writer, opts: EncodeOptions) Encod
     const v: Float = value;
     if (!std.math.isFinite(v)) {
         switch (opts.non_finite) {
-            .null_value => return w.writeAll("null"),
+            .null_value => return writeAll(w, "null"),
             .fail => return error.NonFiniteFloat,
         }
     }
@@ -278,7 +278,47 @@ fn writeFloat(comptime T: type, value: T, w: *Writer, opts: EncodeOptions) Encod
         // `bufferSize` is defined as the capacity this mode and type need.
         error.BufferTooSmall => unreachable,
     };
-    try w.writeAll(rendered);
+    try writeAll(w, rendered);
+}
+
+/// Like `Writer.writeByte`, but with the drain moved out of line, which keeps
+/// the function small enough to inline into every caller.
+fn writeByte(noalias w: *Writer, byte: u8) Writer.Error!void {
+    if (w.end < w.buffer.len) {
+        @branchHint(.likely);
+        w.buffer[w.end] = byte;
+        w.end += 1;
+        return;
+    }
+    return writeAllSlow(w, &.{byte});
+}
+
+/// Copies `bytes` into the writer's buffer when they fit, and falls back to
+/// `Writer.writeAll` otherwise. `Writer.writeAll` loops over `write`, so the
+/// copy goes through an out-of-line `memcpy` even for a few bytes; checking for
+/// room first lets the copy inline.
+///
+/// The writer is `noalias`, here and in `writeByte`. Without it, the compiler
+/// has to assume that a byte stored into the buffer may have changed the
+/// writer's own fields, and reloads `end` and the buffer after every write,
+/// which turns a run of small writes into a chain of dependent loads and
+/// stores. Nothing may change the writer through another pointer during the
+/// call.
+fn writeAll(noalias w: *Writer, bytes: []const u8) Writer.Error!void {
+    if (w.end + bytes.len <= w.buffer.len) {
+        @branchHint(.likely);
+        @memcpy(w.buffer[w.end..][0..bytes.len], bytes);
+        w.end += bytes.len;
+        return;
+    }
+    return writeAllSlow(w, bytes);
+}
+
+/// The fallback of the helpers above, for when the bytes do not fit the
+/// buffer. Kept out of line so the fast paths stay small enough to inline.
+noinline fn writeAllSlow(w: *Writer, bytes: []const u8) Writer.Error!void {
+    @branchHint(.cold);
+    return w.writeAll(bytes);
 }
 
 const digits2: [200]u8 = blk: {
@@ -320,14 +360,14 @@ fn writeInt(comptime T: type, value: T, w: *Writer) Writer.Error!void {
         i -= 1;
         buf[i] = '-';
     }
-    try w.writeAll(buf[i..]);
+    try writeAll(w, buf[i..]);
 }
 
 /// Escapes `"`, `\` and the C0 control characters; everything else, high bytes
 /// included, passes through untouched. Chunks with nothing to escape are
 /// emitted as a single run rather than byte by byte.
 pub fn writeString(str: []const u8, w: *Writer) Writer.Error!void {
-    try w.writeByte('"');
+    try writeByte(w, '"');
 
     const V = @Vector(16, u8);
     const quote: V = @splat('"');
@@ -344,7 +384,7 @@ pub fn writeString(str: []const u8, w: *Writer) Writer.Error!void {
             continue;
         }
         const at = i + @ctz(hits);
-        try w.writeAll(str[cursor..at]);
+        try writeAll(w, str[cursor..at]);
         try writeEscape(str[at], w);
         cursor = at + 1;
         i = at + 1;
@@ -352,26 +392,26 @@ pub fn writeString(str: []const u8, w: *Writer) Writer.Error!void {
     while (i < str.len) : (i += 1) {
         const c = str[i];
         if (c == '"' or c == '\\' or c < 0x20) {
-            try w.writeAll(str[cursor..i]);
+            try writeAll(w, str[cursor..i]);
             try writeEscape(c, w);
             cursor = i + 1;
         }
     }
-    try w.writeAll(str[cursor..]);
-    try w.writeByte('"');
+    try writeAll(w, str[cursor..]);
+    try writeByte(w, '"');
 }
 
 fn writeEscape(c: u8, w: *Writer) Writer.Error!void {
     switch (c) {
-        '\\' => try w.writeAll("\\\\"),
-        '"' => try w.writeAll("\\\""),
-        0x08 => try w.writeAll("\\b"),
-        0x0c => try w.writeAll("\\f"),
-        '\n' => try w.writeAll("\\n"),
-        '\r' => try w.writeAll("\\r"),
-        '\t' => try w.writeAll("\\t"),
+        '\\' => try writeAll(w, "\\\\"),
+        '"' => try writeAll(w, "\\\""),
+        0x08 => try writeAll(w, "\\b"),
+        0x0c => try writeAll(w, "\\f"),
+        '\n' => try writeAll(w, "\\n"),
+        '\r' => try writeAll(w, "\\r"),
+        '\t' => try writeAll(w, "\\t"),
         else => {
-            try w.writeAll("\\u");
+            try writeAll(w, "\\u");
             try w.printInt(c, 16, .lower, .{ .width = 4, .fill = '0' });
         },
     }
