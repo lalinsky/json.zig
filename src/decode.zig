@@ -15,6 +15,7 @@ const Allocator = std.mem.Allocator;
 const json = @import("json.zig");
 const compat = @import("compat.zig");
 const escapedLiteral = @import("encode.zig").escapedLiteral;
+const fieldsBranchQuota = @import("encode.zig").fieldsBranchQuota;
 
 pub const DecodeError = error{
     /// A byte appeared where the grammar does not allow it.
@@ -959,6 +960,7 @@ pub const Decoder = struct {
         comptime options: json.StructOptions,
         comptime continuing: bool,
     ) DecodeError!T {
+        @setEvalBranchQuota(comptime fieldsBranchQuota(T));
         const fields = comptime compat.structFields(T);
 
         var result: T = undefined;
@@ -1224,6 +1226,7 @@ fn jsonKey(comptime T: type, comptime field_name: []const u8) []const u8 {
 
 fn maxKeyLen(comptime T: type) usize {
     comptime {
+        @setEvalBranchQuota(fieldsBranchQuota(T));
         var m: usize = 1;
         for (compat.structFields(T)) |f| m = @max(m, jsonKey(T, f.name).len);
         return m;

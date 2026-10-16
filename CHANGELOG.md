@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Support for Zig 0.17, alongside 0.16
 
+### Fixed
+- Structs with a few dozen fields failing to compile with "evaluation exceeded 1000 backwards branches"
+
 ## [0.1.0] - 2026-09-16
 
 Initial release.
