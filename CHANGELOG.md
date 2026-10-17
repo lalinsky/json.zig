@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Encoding writes straight into the writer's buffer when there is room, with the writer marked `noalias`, which makes encoding about 26% faster on a string-heavy document and 14% on a small message
 - Integers are written straight into the writer's buffer, and strings shorter than 16 bytes are escaped inline, about another 5% on a string-heavy document and 8% on a small message
-- Floats too long for the exact fast path, around 17 significant digits, are converted with Eisel-Lemire from the digits already collected instead of being parsed again by `std.fmt.parseFloat`, which cuts the instructions spent decoding a float-heavy document by about 15%
+- Floats too long for the exact fast path, around 17 significant digits, are converted with Eisel-Lemire from the digits already collected instead of being parsed again by `std.fmt.parseFloat`, and fraction digits are read eight at a time, making decoding a float-heavy document about 20% faster
 
 ### Fixed
 - Structs with a few dozen fields failing to compile with "evaluation exceeded 1000 backwards branches"

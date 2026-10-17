@@ -106,6 +106,11 @@ fn fastFloat(comptime T: type, window: []const u8) ?struct { value: ?T, len: usi
     if (i < window.len and window[i] == '.') {
         i += 1;
         const frac_start = i;
+        // Long runs of digits are typically fractions, so that is the only
+        // place worth checking for them.
+        const before = ndigits;
+        eightDigitRuns(window, &i, &mantissa, &ndigits);
+        exp10 -= @intCast(ndigits - before);
         while (i < window.len) : (i += 1) {
             const digit = window[i] -% '0';
             if (digit > 9) break;
@@ -156,6 +161,61 @@ fn fastFloat(comptime T: type, window: []const u8) ?struct { value: ?T, len: usi
     const value = decimal_float.toFloat(T, mantissa, exp10, truncated) orelse
         return .{ .value = null, .len = i };
     return .{ .value = if (neg) -value else value, .len = i };
+}
+
+/// Accumulates digits from `window[i.*..]` into `mantissa` eight at a time,
+/// for as long as eight digits follow and still fit in its 19. The digit
+/// loop after it takes whatever is left over.
+inline fn eightDigitRuns(window: []const u8, i: *usize, mantissa: *u64, ndigits: *u32) void {
+    while (ndigits.* + 8 <= 19 and window.len - i.* >= 8) {
+        const chunk = std.mem.readInt(u64, window[i.*..][0..8], .little);
+        if (!allDigits(chunk)) break;
+        mantissa.* = mantissa.* * 100_000_000 + eightDigitsValue(chunk);
+        ndigits.* += 8;
+        i.* += 8;
+    }
+}
+
+/// Whether all eight bytes of `chunk` are ASCII digits: each must have `3` in
+/// its high nibble, and still have it after adding 6, which carries out of
+/// the low nibble for anything past `9`.
+fn allDigits(chunk: u64) bool {
+    const ones: u64 = 0x0101_0101_0101_0101;
+    return (chunk & (0xf0 * ones)) == 0x30 * ones and
+        ((chunk +% 0x06 * ones) & (0xf0 * ones)) == 0x30 * ones;
+}
+
+/// The value of eight ASCII digits loaded little-endian, so the first digit
+/// is in the lowest byte. Pairs of digits are combined, then pairs of those
+/// in two multiplies, as in simdjson's `parse_eight_digits_unrolled`.
+fn eightDigitsValue(chunk: u64) u64 {
+    var v = chunk -% 0x3030_3030_3030_3030;
+    v = (v *% 10) +% (v >> 8);
+    const mask: u64 = 0x0000_00ff_0000_00ff;
+    const mul1: u64 = 0x000f_4240_0000_0064; // 100 + (1000000 << 32)
+    const mul2: u64 = 0x0000_2710_0000_0001; // 1 + (10000 << 32)
+    return ((v & mask) *% mul1 +% ((v >> 16) & mask) *% mul2) >> 32;
+}
+
+test "eight digits at a time" {
+    var prng: std.Random.DefaultPrng = .init(8);
+    const random = prng.random();
+    for (0..10_000) |_| {
+        var digits: [8]u8 = undefined;
+        for (&digits) |*d| d.* = '0' + random.uintLessThan(u8, 10);
+        const chunk = std.mem.readInt(u64, &digits, .little);
+        try std.testing.expect(allDigits(chunk));
+        try std.testing.expectEqual(try std.fmt.parseInt(u64, &digits, 10), eightDigitsValue(chunk));
+    }
+    // Every byte that is not a digit, in every position.
+    for (0..8) |pos| {
+        for (0..256) |b| {
+            if (b >= '0' and b <= '9') continue;
+            var digits = "12345678".*;
+            digits[pos] = @intCast(b);
+            try std.testing.expect(!allDigits(std.mem.readInt(u64, &digits, .little)));
+        }
+    }
 }
 
 /// Checks `text` against RFC 8259's number grammar:
