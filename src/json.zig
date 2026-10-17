@@ -204,6 +204,7 @@ pub fn decodeFromSliceLeaky(
 }
 
 test {
+    _ = @import("decimal_float.zig");
     _ = encode_mod;
     _ = decode_mod;
     _ = @import("test.zig");

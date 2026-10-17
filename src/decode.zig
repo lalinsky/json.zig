@@ -10,6 +10,7 @@
 //! a value may be far larger than the reader's buffer.
 
 const std = @import("std");
+const decimal_float = @import("decimal_float.zig");
 const Reader = std.Io.Reader;
 const Allocator = std.mem.Allocator;
 const json = @import("json.zig");
@@ -60,45 +61,18 @@ pub const DecodeError = error{
     OutOfMemory,
 };
 
-/// Widest mantissa and decimal exponent for which Clinger's exact path holds:
-/// both the mantissa and 10^|exp| must be exactly representable, so the single
-/// multiply (or divide) rounds once and is therefore correctly rounded.
-/// Types not listed here always take the `std.fmt.parseFloat` path.
-const ClingerLimits = struct { max_mantissa: u64, max_exp: i32 };
-
-fn clingerLimits(comptime T: type) ?ClingerLimits {
-    return switch (T) {
-        f64 => .{ .max_mantissa = 1 << 53, .max_exp = 22 },
-        f32 => .{ .max_mantissa = 1 << 24, .max_exp = 10 },
-        else => null,
-    };
-}
-
-const pow10_f64 = [23]f64{
-    1e0,  1e1,  1e2,  1e3,  1e4,  1e5,  1e6,  1e7,  1e8,  1e9,  1e10, 1e11,
-    1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22,
-};
-const pow10_f32 = [11]f32{ 1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10 };
-
 /// Parses a float out of `window` in a single pass, collecting the mantissa and
-/// decimal exponent as it finds the end of the number.
+/// decimal exponent as it finds the end of the number, and converts those
+/// without looking at the text again.
 ///
 /// Returns null - having consumed nothing - when the number runs to the end of
 /// the window, since it may continue in the next fill; the caller then takes
 /// the general path, which is what makes this safe to be approximate about.
 ///
-/// When the number is complete but outside the range where one rounding is
-/// provably enough - digits dropped, or mantissa/exponent too large - `value`
-/// is null and `len` still reports its extent, so the caller can convert it
-/// exactly without rescanning.
+/// When the number is complete but the conversion cannot decide its rounding,
+/// `value` is null and `len` still reports its extent, so the caller can
+/// convert it exactly without rescanning.
 fn fastFloat(comptime T: type, window: []const u8) ?struct { value: ?T, len: usize, invalid: bool = false } {
-    const limits = comptime clingerLimits(T).?;
-    const table = comptime switch (T) {
-        f64 => &pow10_f64,
-        f32 => &pow10_f32,
-        else => unreachable,
-    };
-
     var i: usize = 0;
     const neg = window.len > 0 and window[0] == '-';
     if (neg) i = 1;
@@ -179,19 +153,8 @@ fn fastFloat(comptime T: type, window: []const u8) ?struct { value: ?T, len: usi
     // Reaching the end of the window means the number might not be over.
     if (i >= window.len) return null;
 
-    if (truncated or
-        mantissa > limits.max_mantissa or
-        exp10 < -limits.max_exp or
-        exp10 > limits.max_exp)
-    {
+    const value = decimal_float.toFloat(T, mantissa, exp10, truncated) orelse
         return .{ .value = null, .len = i };
-    }
-
-    const m: T = @floatFromInt(mantissa);
-    const value = if (exp10 >= 0)
-        m * table[@intCast(exp10)]
-    else
-        m / table[@intCast(-exp10)];
     return .{ .value = if (neg) -value else value, .len = i };
 }
 
@@ -594,7 +557,7 @@ pub const Decoder = struct {
     fn float(d: *Decoder, comptime T: type) DecodeError!T {
         _ = try d.peekByte();
 
-        if (comptime clingerLimits(T) != null) {
+        if (comptime decimal_float.supports(T)) {
             const r = d.reader;
             if (fastFloat(T, r.buffer[r.seek..r.end])) |hit| {
                 @branchHint(.likely);
@@ -603,9 +566,10 @@ pub const Decoder = struct {
                     r.seek += hit.len;
                     return v;
                 }
-                // The number is complete but outside the exact range. Its
-                // extent is already known, so hand the span straight to std
-                // rather than scanning it a third time.
+                // The number is complete but too close to a halfway point to
+                // round from its leading digits. Its extent is already known,
+                // so hand the span straight to std rather than scanning it a
+                // third time.
                 const text = r.buffer[r.seek..][0..hit.len];
                 const parsed = std.fmt.parseFloat(T, text) catch return error.InvalidNumber;
                 r.seek += hit.len;
