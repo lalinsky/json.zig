@@ -13,7 +13,7 @@ faster than `std.json`, especially at decoding.
 1) Add json.zig as a dependency in your `build.zig.zon`:
 
 ```bash
-zig fetch --save "git+https://github.com/lalinsky/json.zig?ref=v0.1.0"
+zig fetch --save "git+https://github.com/lalinsky/json.zig?ref=v0.2.0"
 ```
 
 2) In your `build.zig`, add the `json` module as a dependency of your program:
