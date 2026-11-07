@@ -87,6 +87,49 @@ test "decode f32 agrees with std" {
     }
 }
 
+test "random float text agrees with std" {
+    const a = std.testing.allocator;
+    var prng: std.Random.DefaultPrng = .init(0xf10a7);
+    const random = prng.random();
+    var buf: [128]u8 = undefined;
+    for (0..50_000) |_| {
+        var len: usize = 0;
+        if (random.boolean()) {
+            buf[len] = '-';
+            len += 1;
+        }
+        // Integer part without leading zeros, an optional fraction and an
+        // optional exponent, with lengths that land on both sides of eight
+        // and nineteen digits.
+        const int_digits = random.intRangeAtMost(usize, 1, 24);
+        for (0..int_digits) |k| {
+            buf[len] = if (k == 0 and int_digits > 1) '1' + random.uintLessThan(u8, 9) else '0' + random.uintLessThan(u8, 10);
+            len += 1;
+        }
+        if (random.boolean()) {
+            buf[len] = '.';
+            len += 1;
+            for (0..random.intRangeAtMost(usize, 1, 30)) |_| {
+                buf[len] = '0' + random.uintLessThan(u8, 10);
+                len += 1;
+            }
+        }
+        if (random.boolean()) {
+            len += (try std.fmt.bufPrint(buf[len..], "e{d}", .{random.intRangeAtMost(i32, -330, 310)})).len;
+        }
+        const in = buf[0..len];
+        const theirs = try std.fmt.parseFloat(f64, in);
+        const mine = try json.decodeFromSliceLeaky(f64, a, in, .{});
+        testing.expectEqual(@as(u64, @bitCast(theirs)), @as(u64, @bitCast(mine))) catch |err| {
+            std.debug.print("{s}\n", .{in});
+            return err;
+        };
+        const theirs32 = try std.fmt.parseFloat(f32, in);
+        const mine32 = try json.decodeFromSliceLeaky(f32, a, in, .{});
+        try testing.expectEqual(@as(u32, @bitCast(theirs32)), @as(u32, @bitCast(mine32)));
+    }
+}
+
 test "floats agree with std when trickled one byte at a time" {
     const a = std.testing.allocator;
     const T = struct { x: f64 };

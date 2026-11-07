@@ -10,6 +10,7 @@
 //! a value may be far larger than the reader's buffer.
 
 const std = @import("std");
+const decimal_float = @import("decimal_float.zig");
 const Reader = std.Io.Reader;
 const Allocator = std.mem.Allocator;
 const json = @import("json.zig");
@@ -60,45 +61,18 @@ pub const DecodeError = error{
     OutOfMemory,
 };
 
-/// Widest mantissa and decimal exponent for which Clinger's exact path holds:
-/// both the mantissa and 10^|exp| must be exactly representable, so the single
-/// multiply (or divide) rounds once and is therefore correctly rounded.
-/// Types not listed here always take the `std.fmt.parseFloat` path.
-const ClingerLimits = struct { max_mantissa: u64, max_exp: i32 };
-
-fn clingerLimits(comptime T: type) ?ClingerLimits {
-    return switch (T) {
-        f64 => .{ .max_mantissa = 1 << 53, .max_exp = 22 },
-        f32 => .{ .max_mantissa = 1 << 24, .max_exp = 10 },
-        else => null,
-    };
-}
-
-const pow10_f64 = [23]f64{
-    1e0,  1e1,  1e2,  1e3,  1e4,  1e5,  1e6,  1e7,  1e8,  1e9,  1e10, 1e11,
-    1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22,
-};
-const pow10_f32 = [11]f32{ 1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10 };
-
 /// Parses a float out of `window` in a single pass, collecting the mantissa and
-/// decimal exponent as it finds the end of the number.
+/// decimal exponent as it finds the end of the number, and converts those
+/// without looking at the text again.
 ///
 /// Returns null - having consumed nothing - when the number runs to the end of
 /// the window, since it may continue in the next fill; the caller then takes
 /// the general path, which is what makes this safe to be approximate about.
 ///
-/// When the number is complete but outside the range where one rounding is
-/// provably enough - digits dropped, or mantissa/exponent too large - `value`
-/// is null and `len` still reports its extent, so the caller can convert it
-/// exactly without rescanning.
+/// When the number is complete but the conversion cannot decide its rounding,
+/// `value` is null and `len` still reports its extent, so the caller can
+/// convert it exactly without rescanning.
 fn fastFloat(comptime T: type, window: []const u8) ?struct { value: ?T, len: usize, invalid: bool = false } {
-    const limits = comptime clingerLimits(T).?;
-    const table = comptime switch (T) {
-        f64 => &pow10_f64,
-        f32 => &pow10_f32,
-        else => unreachable,
-    };
-
     var i: usize = 0;
     const neg = window.len > 0 and window[0] == '-';
     if (neg) i = 1;
@@ -132,6 +106,11 @@ fn fastFloat(comptime T: type, window: []const u8) ?struct { value: ?T, len: usi
     if (i < window.len and window[i] == '.') {
         i += 1;
         const frac_start = i;
+        // Long runs of digits are typically fractions, so that is the only
+        // place worth checking for them.
+        const before = ndigits;
+        eightDigitRuns(window, &i, &mantissa, &ndigits);
+        exp10 -= @intCast(ndigits - before);
         while (i < window.len) : (i += 1) {
             const digit = window[i] -% '0';
             if (digit > 9) break;
@@ -179,20 +158,64 @@ fn fastFloat(comptime T: type, window: []const u8) ?struct { value: ?T, len: usi
     // Reaching the end of the window means the number might not be over.
     if (i >= window.len) return null;
 
-    if (truncated or
-        mantissa > limits.max_mantissa or
-        exp10 < -limits.max_exp or
-        exp10 > limits.max_exp)
-    {
+    const value = decimal_float.toFloat(T, mantissa, exp10, truncated) orelse
         return .{ .value = null, .len = i };
-    }
-
-    const m: T = @floatFromInt(mantissa);
-    const value = if (exp10 >= 0)
-        m * table[@intCast(exp10)]
-    else
-        m / table[@intCast(-exp10)];
     return .{ .value = if (neg) -value else value, .len = i };
+}
+
+/// Accumulates digits from `window[i.*..]` into `mantissa` eight at a time,
+/// for as long as eight digits follow and still fit in its 19. The digit
+/// loop after it takes whatever is left over.
+inline fn eightDigitRuns(window: []const u8, i: *usize, mantissa: *u64, ndigits: *u32) void {
+    while (ndigits.* + 8 <= 19 and window.len - i.* >= 8) {
+        const chunk = std.mem.readInt(u64, window[i.*..][0..8], .little);
+        if (!allDigits(chunk)) break;
+        mantissa.* = mantissa.* * 100_000_000 + eightDigitsValue(chunk);
+        ndigits.* += 8;
+        i.* += 8;
+    }
+}
+
+/// Whether all eight bytes of `chunk` are ASCII digits: each must have `3` in
+/// its high nibble, and still have it after adding 6, which carries out of
+/// the low nibble for anything past `9`.
+fn allDigits(chunk: u64) bool {
+    const ones: u64 = 0x0101_0101_0101_0101;
+    return (chunk & (0xf0 * ones)) == 0x30 * ones and
+        ((chunk +% 0x06 * ones) & (0xf0 * ones)) == 0x30 * ones;
+}
+
+/// The value of eight ASCII digits loaded little-endian, so the first digit
+/// is in the lowest byte. Pairs of digits are combined, then pairs of those
+/// in two multiplies, as in simdjson's `parse_eight_digits_unrolled`.
+fn eightDigitsValue(chunk: u64) u64 {
+    var v = chunk -% 0x3030_3030_3030_3030;
+    v = (v *% 10) +% (v >> 8);
+    const mask: u64 = 0x0000_00ff_0000_00ff;
+    const mul1: u64 = 0x000f_4240_0000_0064; // 100 + (1000000 << 32)
+    const mul2: u64 = 0x0000_2710_0000_0001; // 1 + (10000 << 32)
+    return ((v & mask) *% mul1 +% ((v >> 16) & mask) *% mul2) >> 32;
+}
+
+test "eight digits at a time" {
+    var prng: std.Random.DefaultPrng = .init(8);
+    const random = prng.random();
+    for (0..10_000) |_| {
+        var digits: [8]u8 = undefined;
+        for (&digits) |*d| d.* = '0' + random.uintLessThan(u8, 10);
+        const chunk = std.mem.readInt(u64, &digits, .little);
+        try std.testing.expect(allDigits(chunk));
+        try std.testing.expectEqual(try std.fmt.parseInt(u64, &digits, 10), eightDigitsValue(chunk));
+    }
+    // Every byte that is not a digit, in every position.
+    for (0..8) |pos| {
+        for (0..256) |b| {
+            if (b >= '0' and b <= '9') continue;
+            var digits = "12345678".*;
+            digits[pos] = @intCast(b);
+            try std.testing.expect(!allDigits(std.mem.readInt(u64, &digits, .little)));
+        }
+    }
 }
 
 /// Checks `text` against RFC 8259's number grammar:
@@ -594,7 +617,7 @@ pub const Decoder = struct {
     fn float(d: *Decoder, comptime T: type) DecodeError!T {
         _ = try d.peekByte();
 
-        if (comptime clingerLimits(T) != null) {
+        if (comptime decimal_float.supports(T)) {
             const r = d.reader;
             if (fastFloat(T, r.buffer[r.seek..r.end])) |hit| {
                 @branchHint(.likely);
@@ -603,9 +626,10 @@ pub const Decoder = struct {
                     r.seek += hit.len;
                     return v;
                 }
-                // The number is complete but outside the exact range. Its
-                // extent is already known, so hand the span straight to std
-                // rather than scanning it a third time.
+                // The number is complete but too close to a halfway point to
+                // round from its leading digits. Its extent is already known,
+                // so hand the span straight to std rather than scanning it a
+                // third time.
                 const text = r.buffer[r.seek..][0..hit.len];
                 const parsed = std.fmt.parseFloat(T, text) catch return error.InvalidNumber;
                 r.seek += hit.len;
