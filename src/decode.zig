@@ -880,6 +880,9 @@ pub const Decoder = struct {
                 if (try d.peekByte() != ',') return error.UnexpectedToken;
                 d.advance(1);
             }
+            // An array that ends early is a length error, not something for
+            // the element's own decoder to misreport, e.g. as a bad number.
+            if (try d.peekByte() == ']') return error.UnexpectedToken;
             result[i] = try d.value(Child);
         }
         try d.expectByte(']');
