@@ -187,9 +187,13 @@ const Point = struct {
 | slices, arrays | array |
 | structs | object |
 | `?T` | `null`, or the encoding of `T` |
-| enums | string naming the tag |
+| enums | string naming the tag (see below) |
 | tagged unions | one-member object, or flattened (see below) |
 | `void` | `null` |
+
+A value of a non-exhaustive enum with no named tag is written as its integer.
+A non-exhaustive enum decodes from either form, and a number that names a tag
+decodes to that tag. Numbers outside the tag type are `error.NumberOutOfRange`.
 
 Encoding a NaN or infinity as `null` matches what JavaScript's
 `JSON.stringify` does. Pass `.{ .non_finite = .fail }` to

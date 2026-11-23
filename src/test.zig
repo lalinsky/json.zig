@@ -1,5 +1,6 @@
 const std = @import("std");
 const json = @import("json.zig");
+const compat = @import("compat.zig");
 const testing = std.testing;
 
 fn encodeToBuf(value: anytype, buf: []u8) ![]const u8 {
@@ -405,6 +406,53 @@ test "enums and tagged unions" {
     try testing.expectEqual([2]u32{ 3, 4 }, s.rect);
     const n = try json.decodeFromSliceLeaky(Shape, a, "{\"none\":null}", .{});
     try testing.expectEqual(Shape.none, n);
+}
+
+test "unnamed values of non-exhaustive enums are integers" {
+    const a = std.testing.allocator;
+    const E = enum(u8) { a, b, _ };
+    const S = enum(i16) { x = -1, _ };
+
+    // Named values are still strings.
+    try expectEncodes(E.b, "\"b\"");
+    try testing.expectEqual(E.b, try json.decodeFromSliceLeaky(E, a, "\"b\"", .{}));
+
+    // A value with no tag has no name to write.
+    try expectEncodes(compat.enumFromInt(E, 5), "5");
+    try expectEncodes(compat.enumFromInt(S, -7), "-7");
+    try testing.expectEqual(compat.enumFromInt(E, 5), try json.decodeFromSliceLeaky(E, a, "5", .{}));
+    try testing.expectEqual(compat.enumFromInt(S, -7), try json.decodeFromSliceLeaky(S, a, "-7", .{}));
+
+    // A number naming a tag is that tag, and the tag type bounds the range.
+    try testing.expectEqual(E.b, try json.decodeFromSliceLeaky(E, a, "1", .{}));
+    try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky(E, a, "256", .{}));
+    try testing.expectError(error.InvalidEnumTag, json.decodeFromSliceLeaky(E, a, "\"c\"", .{}));
+
+    // Exhaustive enums do not take numbers.
+    const X = enum(u8) { a, b };
+    try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky(X, a, "1", .{}));
+
+    // An enum with no named tags at all, the usual shape of a typed ID.
+    const Id = enum(u32) { _ };
+    try expectEncodes(compat.enumFromInt(Id, 42), "42");
+    try testing.expectEqual(compat.enumFromInt(Id, 42), try json.decodeFromSliceLeaky(Id, a, "42", .{}));
+
+    // The limits of signed and wide tag types, which take the slow paths.
+    const I = enum(i8) { _ };
+    try expectEncodes(compat.enumFromInt(I, -128), "-128");
+    try testing.expectEqual(compat.enumFromInt(I, -128), try json.decodeFromSliceLeaky(I, a, "-128", .{}));
+    try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky(I, a, "-129", .{}));
+    const W = enum(u128) { _ };
+    const big = std.math.maxInt(u128);
+    try expectEncodes(compat.enumFromInt(W, big), "340282366920938463463374607431768211455");
+    try testing.expectEqual(compat.enumFromInt(W, big), try json.decodeFromSliceLeaky(W, a, "340282366920938463463374607431768211455", .{}));
+
+    // Through a reader that hands over one byte at a time.
+    var buf: [8]u8 = undefined;
+    var trickle = TrickleReader.init(&buf, "[\"b\",1234,\"a\"]");
+    const L = enum(u16) { a, b, _ };
+    const list = try json.decodeLeaky([3]L, a, &trickle.reader, .{});
+    try testing.expectEqual([3]L{ .b, compat.enumFromInt(L, 1234), .a }, list);
 }
 
 test "trailing data is rejected" {

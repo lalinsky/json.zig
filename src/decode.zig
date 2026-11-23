@@ -868,6 +868,14 @@ pub const Decoder = struct {
     }
 
     fn enumValue(d: *Decoder, comptime T: type) DecodeError!T {
+        // The encoder writes a value with no tag as its integer, which only
+        // a non-exhaustive enum can hold.
+        if (comptime !compat.isExhaustiveEnum(T)) {
+            switch (try d.peekByte()) {
+                '-', '0'...'9' => return compat.enumFromInt(T, try d.int(@typeInfo(T).@"enum".tag_type)),
+                else => {},
+            }
+        }
         var buf: [maxTagLen(T)]u8 = undefined;
         const name = (try d.boundedString(&buf)) orelse return error.InvalidEnumTag;
         inline for (comptime std.meta.fieldNames(T)) |tag_name| {
