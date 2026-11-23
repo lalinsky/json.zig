@@ -144,8 +144,8 @@ fn encodeUnion(comptime T: type, value: T, w: *Writer, opts: EncodeOptions) Enco
             switch (value) {
                 inline else => |payload, tag| {
                     const Payload = @TypeOf(payload);
-                    if (Payload != void and @typeInfo(Payload) != .@"struct") {
-                        @compileError("json: as_tagged needs a struct or void payload, but " ++
+                    if (Payload != void and (@typeInfo(Payload) != .@"struct" or @typeInfo(Payload).@"struct".is_tuple)) {
+                        @compileError("json: as_tagged needs a non-tuple struct or void payload, but " ++
                             @typeName(T) ++ "." ++ @tagName(tag) ++ " is " ++ @typeName(Payload));
                     }
                     try writeAll(w, comptime "{\"" ++ escapedLiteral(tagged.tag_field) ++
@@ -235,7 +235,20 @@ fn canOmitFields(comptime T: type) bool {
     return false;
 }
 
+/// A tuple is positional, so it is written as an array, every element
+/// included: leaving out a null would shift the ones after it.
+fn encodeTuple(comptime T: type, value: T, w: *Writer, opts: EncodeOptions) EncodeError!void {
+    @setEvalBranchQuota(comptime fieldsBranchQuota(T));
+    try writeByte(w, '[');
+    inline for (comptime compat.structFields(T), 0..) |f, i| {
+        if (i != 0) try writeByte(w, ',');
+        try encodeValue(f.type, @field(value, f.name), w, opts);
+    }
+    try writeByte(w, ']');
+}
+
 fn encodeStruct(comptime T: type, value: T, w: *Writer, opts: EncodeOptions) EncodeError!void {
+    if (comptime @typeInfo(T).@"struct".is_tuple) return encodeTuple(T, value, w, opts);
     @setEvalBranchQuota(comptime fieldsBranchQuota(T));
     const fields = comptime compat.structFields(T);
     const options = comptime json.structOptions(T);

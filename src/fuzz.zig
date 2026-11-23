@@ -104,6 +104,7 @@ const Payload = struct {
     tag: Tag,
     fixed: [4]u8,
     list: []const i32,
+    pair: struct { ?i16, []const u8 },
 };
 
 test "fuzz: encoding and decoding agree" {
@@ -140,6 +141,7 @@ fn roundTrip(_: void, smith: *Smith) anyerror!void {
         .tag = smith.value(Tag),
         .fixed = fixed,
         .list = list_buf[0..list_len],
+        .pair = .{ if (smith.value(bool)) smith.value(i16) else null, sbuf[0..slen] },
     };
 
     var first_buf: [8192]u8 = undefined;

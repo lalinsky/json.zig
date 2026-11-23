@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Non-exhaustive enums decode from a number as well as from a tag name
 
+### Changed
+- Tuples are encoded as JSON arrays, with every element written including nulls, and decoded from arrays of the same length. They used to be objects keyed by field index
+- A tuple is no longer accepted as the payload of an `as_tagged` union variant, since its elements have no names to hoist. It used to be flattened into members named `"0"`, `"1"` and so on
+
 ### Fixed
 - Decoding into a sentinel-terminated array such as `[3:0]u8` left the sentinel undefined
 - Encoding a value of a non-exhaustive enum that has no named tag panicked. It is now written as its integer

@@ -303,6 +303,69 @@ test "nested structs, slices and fixed arrays" {
     try testing.expectEqual(@as(usize, 0), v.empty.len);
 }
 
+test "tuples are arrays" {
+    const a = std.testing.allocator;
+    var arena: std.heap.ArenaAllocator = .init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Every element is written, nulls included, so positions are kept.
+    const T = struct { ?u8, u8, []const u8 };
+    try expectEncodes(T{ null, 1, "x" }, "[null,1,\"x\"]");
+    const t = try json.decodeFromSliceLeaky(T, alloc, "[null,1,\"x\"]", .{});
+    try testing.expectEqual(@as(?u8, null), t[0]);
+    try testing.expectEqual(@as(u8, 1), t[1]);
+    try testing.expectEqualStrings("x", t[2]);
+    const spaced = try json.decodeFromSliceLeaky(T, alloc, " [ 7 , 2 , \"y\" ] ", .{});
+    try testing.expectEqual(@as(?u8, 7), spaced[0]);
+
+    // Anonymous tuple literals, whose fields are comptime.
+    try expectEncodes(.{ 1, "two", true }, "[1,\"two\",true]");
+
+    // The length has to match.
+    try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky(T, alloc, "[null,1]", .{}));
+    try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky(T, alloc, "[null,1,\"x\",2]", .{}));
+    try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky(T, alloc, "{\"0\":null}", .{}));
+    // Also when the array ends where a number was due, whose own decoder
+    // would otherwise report it as a malformed number.
+    try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky(struct { u8 }, alloc, "[]", .{}));
+    try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky(struct { u8, ?u8 }, alloc, "[1,]", .{}));
+
+    // Empty tuples, and tuples nested in structs and slices.
+    try expectEncodes(struct {}{}, "{}");
+    const Empty = @TypeOf(.{});
+    try expectEncodes(Empty{}, "[]");
+    _ = try json.decodeFromSliceLeaky(Empty, alloc, "[]", .{});
+    _ = try json.decodeFromSliceLeaky(Empty, alloc, " [ ] ", .{});
+    try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky(Empty, alloc, "{}", .{}));
+    try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky(struct {}, alloc, "[]", .{}));
+
+    const Pair = struct { []const u8, i32 };
+    const S = struct { pairs: []const Pair };
+    const s = try json.decodeFromSliceLeaky(S, alloc, "{\"pairs\":[[\"a\",1],[\"b\",-2]]}", .{});
+    try testing.expectEqualStrings("b", s.pairs[1][0]);
+    try testing.expectEqual(@as(i32, -2), s.pairs[1][1]);
+    try expectEncodes(s, "{\"pairs\":[[\"a\",1],[\"b\",-2]]}");
+
+    // Through a reader that hands over one byte at a time.
+    var buf: [8]u8 = undefined;
+    var trickle = TrickleReader.init(&buf, "[ null , 200 , \"a longer string\" ]");
+    const streamed = try json.decodeLeaky(T, alloc, &trickle.reader, .{});
+    try testing.expectEqual(@as(?u8, null), streamed[0]);
+    try testing.expectEqual(@as(u8, 200), streamed[1]);
+    try testing.expectEqualStrings("a longer string", streamed[2]);
+
+    // A custom serializer writing a tuple literal gets an array too.
+    const Coord = struct {
+        x: f64,
+        y: ?f64,
+        pub fn jsonWrite(self: @This(), encoder: json.Encoder) !void {
+            try encoder.write(.{ self.x, self.y });
+        }
+    };
+    try expectEncodes(Coord{ .x = 1.5, .y = null }, "[1.5,null]");
+}
+
 test "single-item pointers, including recursive ones" {
     const Node = struct {
         value: u32,
