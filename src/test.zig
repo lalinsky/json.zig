@@ -326,6 +326,10 @@ test "tuples are arrays" {
     try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky(T, alloc, "[null,1]", .{}));
     try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky(T, alloc, "[null,1,\"x\",2]", .{}));
     try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky(T, alloc, "{\"0\":null}", .{}));
+    // Also when the array ends where a number was due, whose own decoder
+    // would otherwise report it as a malformed number.
+    try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky(struct { u8 }, alloc, "[]", .{}));
+    try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky(struct { u8, ?u8 }, alloc, "[1,]", .{}));
 
     // Empty tuples, and tuples nested in structs and slices.
     try expectEncodes(struct {}{}, "{}");
