@@ -425,8 +425,8 @@ pub const Decoder = struct {
             },
             .pointer => |ptr| switch (ptr.size) {
                 .slice => {
-                    if (ptr.child == u8) return d.string();
-                    return d.slice(T, ptr.child);
+                    if (ptr.child == u8) return d.string(comptime ptr.sentinel());
+                    return d.slice(T, ptr.child, comptime ptr.sentinel());
                 },
                 .one => {
                     const p = try d.gpa.create(ptr.child);
@@ -689,7 +689,13 @@ pub const Decoder = struct {
         return 0;
     }
 
-    fn string(d: *Decoder) DecodeError![]u8 {
+    fn String(comptime sentinel: ?u8) type {
+        return if (sentinel) |s| [:s]u8 else []u8;
+    }
+
+    /// Decodes a string into memory of its own. With a sentinel, it is
+    /// appended past the end, as for any `[:s]u8`.
+    fn string(d: *Decoder, comptime sentinel: ?u8) DecodeError!String(sentinel) {
         try d.expectByte('"');
 
         // Fast path: the closing quote is already buffered and there are no
@@ -703,7 +709,11 @@ pub const Decoder = struct {
             if (window[hit] == '"') {
                 @branchHint(.likely);
                 if (scan.non_ascii) try checkUtf8(window[0..hit]);
-                const out = try d.gpa.dupe(u8, window[0..hit]);
+                const out = if (sentinel) |s| blk: {
+                    const buf = try d.gpa.allocSentinel(u8, hit, s);
+                    @memcpy(buf, window[0..hit]);
+                    break :blk buf;
+                } else try d.gpa.dupe(u8, window[0..hit]);
                 r.seek += hit + 1;
                 return out;
             }
@@ -713,6 +723,7 @@ pub const Decoder = struct {
         var out: std.ArrayList(u8) = .empty;
         errdefer out.deinit(d.gpa);
         try d.stringBody(&out);
+        if (sentinel) |s| return out.toOwnedSliceSentinel(d.gpa, s);
         return out.toOwnedSlice(d.gpa);
     }
 
@@ -812,13 +823,18 @@ pub const Decoder = struct {
 
     // ------------------------------------------------------------ compound
 
-    fn slice(d: *Decoder, comptime S: type, comptime Child: type) DecodeError!S {
+    fn slice(d: *Decoder, comptime S: type, comptime Child: type, comptime sentinel: ?Child) DecodeError!S {
         try d.expectByte('[');
         try d.pushDepth();
         defer d.depth -= 1;
 
         if (try d.peekByte() == ']') {
             d.advance(1);
+            // An empty sentinel-terminated slice still needs somewhere to keep
+            // its terminator. It has to be allocated rather than a static
+            // `&[_:s]Child{}`: freeing a sentinel slice frees `len + 1`
+            // elements, so the caller would free memory it does not own.
+            if (sentinel) |s| return d.gpa.allocSentinel(Child, 0, s);
             return &.{};
         }
 
@@ -835,6 +851,7 @@ pub const Decoder = struct {
                 else => return error.UnexpectedToken,
             }
         }
+        if (sentinel) |s| return list.toOwnedSliceSentinel(d.gpa, s);
         return list.toOwnedSlice(d.gpa);
     }
 

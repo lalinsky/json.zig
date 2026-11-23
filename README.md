@@ -192,6 +192,12 @@ const Point = struct {
 | tagged unions | one-member object, or flattened (see below) |
 | `void` | `null` |
 
+Sentinel-terminated arrays and slices, such as `[:0]const u8`, map the same
+way as their plain counterparts, and get their sentinel when decoded.
+Many-item pointers such as `[*:0]const u8` are not supported. A `\u0000` in
+the input decodes to a NUL inside the string, so a `[:0]const u8` handed to C
+can look shorter than it is.
+
 A value of a non-exhaustive enum with no named tag is written as its integer.
 A non-exhaustive enum decodes from either form, and a number that names a tag
 decodes to that tag. Numbers outside the tag type are `error.NumberOutOfRange`.
