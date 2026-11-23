@@ -1195,6 +1195,23 @@ test "fixed byte arrays round trip" {
     try testing.expectEqual([3]u16{ 1, 2, 3 }, n.v);
 }
 
+test "sentinel-terminated arrays get their sentinel" {
+    const a = std.testing.allocator;
+
+    // The element past the end has to be the sentinel, not left undefined.
+    const nums = try json.decodeFromSliceLeaky([3:0]u8, a, "[1,2,3]", .{});
+    try testing.expectEqual(@as(u8, 0), nums[3]);
+    const str = try json.decodeFromSliceLeaky([3:0]u8, a, "\"abc\"", .{});
+    try testing.expectEqualStrings("abc", &str);
+    try testing.expectEqual(@as(u8, 0), str[3]);
+
+    // Any sentinel value, and non-u8 elements too.
+    const wide = try json.decodeFromSliceLeaky([2:7]u16, a, "[1,2]", .{});
+    try testing.expectEqual(@as(u16, 7), wide[2]);
+    const empty = try json.decodeFromSliceLeaky([0:9]u8, a, "[]", .{});
+    try testing.expectEqual(@as(u8, 9), empty[0]);
+}
+
 test "negative zero decodes into unsigned types" {
     const a = std.testing.allocator;
     var arena: std.heap.ArenaAllocator = .init(a);
