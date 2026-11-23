@@ -59,6 +59,32 @@ pub fn unionFields(comptime T: type) []const UnionField {
     };
 }
 
+/// Whether every value of enum `T` has a named tag. Zig 0.17 replaced the
+/// `is_exhaustive` flag with a `mode` enum.
+pub fn isExhaustiveEnum(comptime T: type) bool {
+    const info = @typeInfo(T).@"enum";
+    if (@hasField(@TypeOf(info), "mode")) return info.mode == .exhaustive;
+    return info.is_exhaustive;
+}
+
+/// Converts between an enum and its integer. Zig 0.17 renamed `@intFromEnum`
+/// and `@enumFromInt`, and its `zig fmt` rewrites the old names into ones Zig
+/// 0.16 does not have. A packed struct holding just the enum has exactly the
+/// tag type's bits, so a bit cast converts either way on both versions.
+pub fn enumToInt(comptime E: type, e: E) @typeInfo(E).@"enum".tag_type {
+    const Wrap = packed struct { e: E };
+    return @bitCast(Wrap{ .e = e });
+}
+
+/// The other direction of `enumToInt`, for non-exhaustive enums only, where
+/// every value of the tag type is a valid value of the enum.
+pub fn enumFromInt(comptime E: type, int: @typeInfo(E).@"enum".tag_type) E {
+    comptime std.debug.assert(!isExhaustiveEnum(E));
+    const Wrap = packed struct { e: E };
+    const w: Wrap = @bitCast(int);
+    return w.e;
+}
+
 /// Bit-casts a bool vector to an integer with element `i` in bit `i`, so that
 /// `@ctz` finds the first true element. Zig 0.16 bit-casts element 0 to the
 /// most significant bit on big-endian targets, while 0.17 always puts it in

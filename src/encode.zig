@@ -78,7 +78,19 @@ pub fn encodeValue(
             if (value) |payload| return encodeValue(@TypeOf(payload), payload, w, opts);
             try writeAll(w, "null");
         },
-        .@"enum" => try writeString(@tagName(value), w),
+        .@"enum" => |info| {
+            // A non-exhaustive enum can hold values with no tag, which have no
+            // name to write, so those are written as their integer instead.
+            // `@tagName` cannot be used at all here, even for named values:
+            // Zig 0.16 rejects it at compile time for an enum with no tags,
+            // such as `enum(u32) { _ }`.
+            if (comptime !compat.isExhaustiveEnum(T)) {
+                const name = std.enums.tagName(T, value) orelse
+                    return writeInt(info.tag_type, compat.enumToInt(T, value), w);
+                return writeString(name, w);
+            }
+            try writeString(@tagName(value), w);
+        },
         .enum_literal => try writeString(@tagName(value), w),
         .@"union" => try encodeUnion(T, value, w, opts),
         .@"struct" => try encodeStruct(T, value, w, opts),

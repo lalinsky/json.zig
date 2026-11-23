@@ -7,8 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Non-exhaustive enums decode from a number as well as from a tag name
+
 ### Fixed
 - Decoding into a sentinel-terminated array such as `[3:0]u8` left the sentinel undefined
+- Encoding a value of a non-exhaustive enum that has no named tag panicked. It is now written as its integer
 
 ## [0.2.0] - 2026-10-25
 
