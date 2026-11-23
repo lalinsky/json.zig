@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Decoding into a sentinel-terminated array such as `[3:0]u8` left the sentinel undefined
 - Encoding a value of a non-exhaustive enum that has no named tag panicked. It is now written as its integer
+- A JSON array too short for the fixed-size array it was decoded into was reported as `error.InvalidNumber` when the elements are numbers or optional numbers. It is now `error.UnexpectedToken`, as for other element types and for tuples
 
 ## [0.2.0] - 2026-10-25
 

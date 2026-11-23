@@ -303,6 +303,32 @@ test "nested structs, slices and fixed arrays" {
     try testing.expectEqual(@as(usize, 0), v.empty.len);
 }
 
+test "a fixed array of the wrong length" {
+    const a = std.testing.allocator;
+
+    // A JSON array of the wrong length is UnexpectedToken whatever the element
+    // type, even when it ends where a number was due and the number decoder
+    // would otherwise call it a malformed number. (A string of the wrong
+    // length for a [N]u8 is LengthMismatch, see the byte array tests.)
+    try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky([1]u8, a, "[]", .{}));
+    try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky([1]u8, a, "[ ]", .{}));
+    try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky([2]u8, a, "[1,]", .{}));
+    try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky([3]f64, a, "[1.0,2.0,]", .{}));
+    try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky([2]?u8, a, "[null,]", .{}));
+    try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky([2][2]u8, a, "[[1,2],[3,]]", .{}));
+    try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky([2]u8, a, "[1]", .{}));
+    try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky([2]u8, a, "[1,2,3]", .{}));
+
+    // The same through a reader that hands over one byte at a time.
+    var buf: [8]u8 = undefined;
+    var trickle = TrickleReader.init(&buf, "[1.0, 2.0 , ]");
+    try testing.expectError(error.UnexpectedToken, json.decodeLeaky([3]f64, a, &trickle.reader, .{}));
+
+    // Empty arrays and the right length still decode.
+    _ = try json.decodeFromSliceLeaky([0]u8, a, "[ ]", .{});
+    try testing.expectEqual([2]?u8{ null, 1 }, try json.decodeFromSliceLeaky([2]?u8, a, "[null,1]", .{}));
+}
+
 test "tuples are arrays" {
     const a = std.testing.allocator;
     var arena: std.heap.ArenaAllocator = .init(a);
