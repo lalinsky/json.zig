@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Decoding sentinel-terminated slices such as `[:0]const u8`
 - Non-exhaustive enums decode from a number as well as from a tag name
 
 ### Changed

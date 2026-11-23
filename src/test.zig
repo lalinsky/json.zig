@@ -389,6 +389,79 @@ test "single-item pointers, including recursive ones" {
     try testing.expectEqual(@as(u32, 7), p.*);
 }
 
+test "sentinel-terminated slices" {
+    const a = std.testing.allocator;
+    var arena: std.heap.ArenaAllocator = .init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The fast path, and the general one that handles escapes.
+    const plain = try json.decodeFromSliceLeaky([:0]const u8, alloc, "\"abc\"", .{});
+    try testing.expectEqualStrings("abc", plain);
+    try testing.expectEqual(@as(u8, 0), plain[plain.len]);
+    const escaped = try json.decodeFromSliceLeaky([:0]u8, alloc, "\"a\\nb\"", .{});
+    try testing.expectEqualStrings("a\nb", escaped);
+    try testing.expectEqual(@as(u8, 0), escaped[escaped.len]);
+    const empty_str = try json.decodeFromSliceLeaky([:0]const u8, alloc, "\"\"", .{});
+    try testing.expectEqual(@as(usize, 0), empty_str.len);
+    try testing.expectEqual(@as(u8, 0), empty_str[0]);
+
+    // Through a reader too small to hold the string, which takes the general
+    // path even without escapes.
+    {
+        const doc = "\"a string longer than the buffer\"";
+        var buf: [8]u8 = undefined;
+        var src: std.Io.Reader = .fixed(doc);
+        var trickle = src.limited(.unlimited, &buf);
+        const s = try json.decodeLeaky([:0]const u8, alloc, &trickle.interface, .{});
+        try testing.expectEqualStrings("a string longer than the buffer", s);
+        try testing.expectEqual(@as(u8, 0), s[s.len]);
+    }
+
+    // Slices of other element types.
+    const nums = try json.decodeFromSliceLeaky([:0]const u32, alloc, "[1,2,3]", .{});
+    try testing.expectEqualSlices(u32, &.{ 1, 2, 3 }, nums);
+    try testing.expectEqual(@as(u32, 0), nums[nums.len]);
+    const none = try json.decodeFromSliceLeaky([:5]u32, alloc, "[]", .{});
+    try testing.expectEqual(@as(usize, 0), none.len);
+    try testing.expectEqual(@as(u32, 5), none[0]);
+
+    // And they encode like any other slice.
+    try expectEncodes(plain, "\"abc\"");
+    try expectEncodes(nums, "[1,2,3]");
+
+    // A sentinel other than zero, which may also appear in the content.
+    const x = try json.decodeFromSliceLeaky([:'x']const u8, alloc, "\"axb\"", .{});
+    try testing.expectEqualStrings("axb", x);
+    try testing.expectEqual(@as(u8, 'x'), x[x.len]);
+
+    // Nothing leaks or is freed wrong when decoding through a non-arena
+    // allocator, which frees the sentinel along with the content.
+    const owned = try json.decodeFromSliceLeaky([:0]const u8, a, "\"xyz\"", .{});
+    defer a.free(owned);
+    try testing.expectEqualStrings("xyz", owned);
+    const owned_escaped = try json.decodeFromSliceLeaky([:0]u8, a, "\"a\\u00e9b\"", .{});
+    defer a.free(owned_escaped);
+    try testing.expectEqualStrings("a\u{e9}b", owned_escaped);
+    const owned_empty = try json.decodeFromSliceLeaky([:0]const u32, a, "[]", .{});
+    defer a.free(owned_empty);
+    try testing.expectEqual(@as(u32, 0), owned_empty[0]);
+
+    // Or when an allocation fails partway, on every path.
+    const docs: []const []const u8 = &.{ "\"abc\"", "\"a\\nlonger string that grows the list\"", "\"\"" };
+    for (docs) |doc| try testing.checkAllAllocationFailures(a, DecodeAndFree([:0]const u8).run, .{doc});
+    try testing.checkAllAllocationFailures(a, DecodeAndFree([:7]const u32).run, .{"[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17]"});
+    try testing.checkAllAllocationFailures(a, DecodeAndFree([:7]const u32).run, .{"[]"});
+}
+
+fn DecodeAndFree(comptime T: type) type {
+    return struct {
+        fn run(gpa: std.mem.Allocator, doc: []const u8) !void {
+            gpa.free(try json.decodeFromSliceLeaky(T, gpa, doc, .{}));
+        }
+    };
+}
+
 test "a struct with many fields and a jsonFormat" {
     // The per-field comptime work used to exhaust the default branch quota.
     const Wide = struct {
