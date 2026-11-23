@@ -30,6 +30,7 @@ const typed_cases = .{
     .{ "y_array_empty.json", []const i64 },
     .{ "y_array_ending_with_newline.json", []const []const u8 },
     .{ "y_array_false.json", []const bool },
+    .{ "y_array_heterogeneous.json", struct { void, u8, []const u8, struct {} } },
     .{ "y_array_null.json", []const ?u8 },
     .{ "y_array_with_1_and_newline.json", []const i64 },
     .{ "y_array_with_leading_space.json", []const i64 },
@@ -119,7 +120,6 @@ const typed_cases = .{
 
 /// Must-accept cases with no entry above, and why.
 const untypeable = [_]struct { name: []const u8, why: []const u8 }{
-    .{ .name = "y_array_heterogeneous.json", .why = "no static Zig type expresses [null, 1, \"1\", {}]" },
     .{ .name = "y_object_duplicated_key.json", .why = "duplicate keys, which this library rejects" },
     .{ .name = "y_object_duplicated_key_and_value.json", .why = "duplicate keys, which this library rejects" },
     .{ .name = "y_object_empty_key.json", .why = "a Zig identifier cannot be empty" },
@@ -150,6 +150,11 @@ const reject_candidates = .{
     struct { min: f64, max: f64 },
     struct { id: []const u8, x: []const i64 },
     struct { title: []const u8 },
+    struct { i64 },
+    struct { ?i64, ?i64 },
+    struct { []const u8, i64 },
+    struct { ?f64 },
+    struct { []const i64 },
 };
 
 /// Decodes `bytes` as the exact type recorded for `name`, if there is one.

@@ -411,7 +411,10 @@ pub const Decoder = struct {
             },
             .@"enum" => return d.enumValue(T),
             .@"union" => return d.unionValue(T),
-            .@"struct" => return d.object(T),
+            .@"struct" => |info| {
+                if (info.is_tuple) return d.tuple(T);
+                return d.object(T);
+            },
             .array => |arr| {
                 // A [N]u8 is encoded as a string, so accept that as well as an
                 // array of numbers. std.json accepts both forms too.
@@ -867,6 +870,25 @@ pub const Decoder = struct {
         return result;
     }
 
+    /// A tuple is read from an array with exactly one element per field.
+    fn tuple(d: *Decoder, comptime T: type) DecodeError!T {
+        @setEvalBranchQuota(comptime fieldsBranchQuota(T));
+        try d.expectByte('[');
+        try d.pushDepth();
+        defer d.depth -= 1;
+
+        var result: T = undefined;
+        inline for (comptime compat.structFields(T), 0..) |f, i| {
+            if (i != 0) {
+                if (try d.peekByte() != ',') return error.UnexpectedToken;
+                d.advance(1);
+            }
+            @field(result, f.name) = try d.value(f.type);
+        }
+        try d.expectByte(']');
+        return result;
+    }
+
     fn enumValue(d: *Decoder, comptime T: type) DecodeError!T {
         // The encoder writes a value with no tag as its integer, which only
         // a non-exhaustive enum can hold.
@@ -938,7 +960,7 @@ pub const Decoder = struct {
                             };
                             _ = try d.objectMembers(Empty, empty_options, true);
                             result = @unionInit(T, f.name, {});
-                        } else if (@typeInfo(f.type) == .@"struct") {
+                        } else if (@typeInfo(f.type) == .@"struct" and !@typeInfo(f.type).@"struct".is_tuple) {
                             // The union's own skip_unknown_fields governs the
                             // flattened object, on top of whatever the payload
                             // struct asks for.
@@ -949,7 +971,7 @@ pub const Decoder = struct {
                             };
                             result = @unionInit(T, f.name, try d.objectMembers(f.type, payload_options, true));
                         } else {
-                            @compileError("json: as_tagged needs a struct or void payload, but " ++
+                            @compileError("json: as_tagged needs a non-tuple struct or void payload, but " ++
                                 @typeName(T) ++ "." ++ f.name ++ " is " ++ @typeName(f.type));
                         }
                     }

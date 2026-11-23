@@ -152,7 +152,7 @@ const Shape = union(enum) {
 ```
 
 `as_tagged` needs every variant to carry a struct or `void`, since there is
-nothing to hoist otherwise, and the tag must be the object's **first** member.
+nothing to hoist otherwise (a tuple has no names to hoist either), and the tag must be the object's **first** member.
 Anything else would mean buffering the whole object before knowing which
 variant to build, which a streaming decoder cannot do.
 
@@ -186,6 +186,7 @@ const Point = struct {
 | `[]const u8` | string (validated as UTF-8) |
 | slices, arrays | array |
 | structs | object |
+| tuples | array |
 | `?T` | `null`, or the encoding of `T` |
 | enums | string naming the tag (see below) |
 | tagged unions | one-member object, or flattened (see below) |
