@@ -844,7 +844,8 @@ pub const Decoder = struct {
         try d.stringBody(&out);
         if (out.items.len != n) return error.LengthMismatch;
         var result: T = undefined;
-        @memcpy(&result, out.items);
+        @memcpy(result[0..n], out.items);
+        if (comptime @typeInfo(T).array.sentinel()) |s| result[n] = s;
         return result;
     }
 
@@ -862,6 +863,7 @@ pub const Decoder = struct {
             result[i] = try d.value(Child);
         }
         try d.expectByte(']');
+        if (comptime @typeInfo(T).array.sentinel()) |s| result[n] = s;
         return result;
     }
 
