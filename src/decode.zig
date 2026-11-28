@@ -470,7 +470,7 @@ pub const Decoder = struct {
 
         const r = d.reader;
         const window = r.buffer[r.seek..r.end];
-        if (numberEnd(window)) |end| {
+        if (numberEnd(window, 0)) |end| {
             @branchHint(.likely);
             if (end == 0) return error.InvalidNumber;
             r.seek += end;
@@ -480,7 +480,7 @@ pub const Decoder = struct {
         var len: usize = 0;
         while (true) {
             const chunk = d.reader.buffered();
-            const scanned = numberEnd(chunk) orelse chunk.len;
+            const scanned = numberEnd(chunk, if (len > 0) buf[len - 1] else 0) orelse chunk.len;
             if (len + scanned > buf.len) return error.NumberTooLong;
             @memcpy(buf[len..][0..scanned], chunk[0..scanned]);
             len += scanned;
@@ -500,13 +500,23 @@ pub const Decoder = struct {
     }
 
     /// Index of the first byte in `window` that cannot appear in a JSON
-    /// number, or null if the window is all number bytes.
-    inline fn numberEnd(window: []const u8) ?usize {
+    /// number, or null if the window is all number bytes. `prev` is the byte
+    /// before the window that is already part of the number, or 0 when the
+    /// window starts it. A sign belongs to the number only at its start or
+    /// after the exponent marker, so `1-2` ends before the `-` however the
+    /// bytes arrive.
+    inline fn numberEnd(window: []const u8, prev: u8) ?usize {
+        var last = prev;
         for (window, 0..) |c, i| {
             switch (c) {
-                '0'...'9', '-', '+', '.', 'e', 'E' => {},
+                '0'...'9', '.', 'e', 'E' => {},
+                '-', '+' => switch (last) {
+                    0, 'e', 'E' => {},
+                    else => return i,
+                },
                 else => return i,
             }
+            last = c;
         }
         return null;
     }
