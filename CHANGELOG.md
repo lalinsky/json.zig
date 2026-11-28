@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Decoding sentinel-terminated slices such as `[:0]const u8`
+- `DecodeOptions.allow_trailing_data`, to stop after the value instead of failing with `error.TrailingData`, for reading a stream of documents
 - Non-exhaustive enums decode from a number as well as from a tag name
 
 ### Changed

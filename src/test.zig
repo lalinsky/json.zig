@@ -625,6 +625,20 @@ test "trailing data is rejected" {
     try testing.expectEqual(@as(u8, 1), try json.decodeFromSliceLeaky(u8, a, " 1 \n ", .{}));
 }
 
+test "allow_trailing_data stops after the value" {
+    const a = std.testing.allocator;
+    const opts: json.DecodeOptions = .{ .allow_trailing_data = true };
+    try testing.expectEqual(@as(u8, 1), try json.decodeFromSliceLeaky(u8, a, "1 junk", opts));
+
+    // A stream of documents, read one decode at a time.
+    var buf: [8]u8 = undefined;
+    var trickle = TrickleReader.init(&buf, "{\"n\":1}\n{\"n\":2} [3]");
+    const N = struct { n: u8 };
+    try testing.expectEqual(@as(u8, 1), (try json.decodeLeaky(N, a, &trickle.reader, opts)).n);
+    try testing.expectEqual(@as(u8, 2), (try json.decodeLeaky(N, a, &trickle.reader, opts)).n);
+    try testing.expectEqual([1]u8{3}, try json.decodeLeaky([1]u8, a, &trickle.reader, .{}));
+}
+
 // ------------------------------------------------------------------ streaming
 
 /// Hands over one byte per fill, out of a caller-sized buffer: a value can

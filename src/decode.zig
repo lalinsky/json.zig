@@ -252,6 +252,11 @@ pub const DecodeOptions = struct {
     /// a type you do not own, and so cannot give a `jsonFormat`, reads a
     /// document that carries extra members.
     skip_unknown_fields: bool = false,
+    /// Stop after the value instead of failing with `error.TrailingData` when
+    /// anything but whitespace follows it. The reader is left right after the
+    /// value, so the next decode from it reads the next one, which is how a
+    /// stream of documents such as NDJSON is read.
+    allow_trailing_data: bool = false,
 };
 
 pub const Decoder = struct {
