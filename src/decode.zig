@@ -17,7 +17,8 @@ const compat = @import("compat.zig");
 const escapedLiteral = @import("encode.zig").escapedLiteral;
 const fieldsBranchQuota = @import("encode.zig").fieldsBranchQuota;
 
-pub const DecodeError = error{
+/// What decoding from a slice can fail with.
+pub const SliceDecodeError = error{
     /// A byte appeared where the grammar does not allow it.
     UnexpectedToken,
     /// The document ended in the middle of a value.
@@ -56,8 +57,14 @@ pub const DecodeError = error{
     UnknownUnionVariant,
     /// An `as_tagged` union object did not start with its tag field.
     MissingUnionTag,
-    ReadFailed,
     OutOfMemory,
+};
+
+/// What decoding from a reader can fail with: everything decoding from a
+/// slice can, and the reader failing.
+pub const DecodeError = SliceDecodeError || error{
+    /// The reader failed, and its own error says why.
+    ReadFailed,
 };
 
 /// Widest mantissa and decimal exponent for which Clinger's exact path holds:
@@ -393,6 +400,9 @@ pub const Decoder = struct {
 
     // ------------------------------------------------------------- values
 
+    /// Decodes the next value as a `T`, through `T.jsonRead` when it has one.
+    /// `error.ReadFailed` from `jsonRead` must mean that `d.reader` failed:
+    /// decoding from a slice treats it as impossible.
     pub fn value(d: *Decoder, comptime T: type) DecodeError!T {
         if (comptime std.meta.hasFn(T, "jsonRead")) {
             return T.jsonRead(d);

@@ -181,6 +181,9 @@ const Point = struct {
 };
 ```
 
+`error.ReadFailed` from `jsonRead` means the decoder's own reader failed. A `jsonRead` that reads
+from another reader, such as a decompressor, has to return a different error when that one fails.
+
 ## Type mapping
 
 | Zig | JSON |
