@@ -46,8 +46,8 @@ test "decode integer limits and range errors" {
     try testing.expectEqual(@as(i64, std.math.minInt(i64)), try json.decodeFromSliceLeaky(i64, a, "-9223372036854775808", .{}));
     try testing.expectEqual(@as(i32, -2147483648), try json.decodeFromSliceLeaky(i32, a, "-2147483648", .{}));
 
-    try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky(u8, a, "256", .{}));
-    try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky(u8, a, "-1", .{}));
+    try testing.expectError(error.Overflow, json.decodeFromSliceLeaky(u8, a, "256", .{}));
+    try testing.expectError(error.Overflow, json.decodeFromSliceLeaky(u8, a, "-1", .{}));
     try testing.expectError(error.InvalidNumber, json.decodeFromSliceLeaky(u32, a, "1.5", .{}));
     try testing.expectError(error.InvalidNumber, json.decodeFromSliceLeaky(u32, a, "1e3", .{}));
 }
@@ -312,17 +312,22 @@ test "a fixed array of the wrong length" {
     // length for a [N]u8 is LengthMismatch, see the byte array tests.)
     try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky([1]u8, a, "[]", .{}));
     try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky([1]u8, a, "[ ]", .{}));
-    try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky([2]u8, a, "[1,]", .{}));
-    try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky([3]f64, a, "[1.0,2.0,]", .{}));
-    try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky([2]?u8, a, "[null,]", .{}));
-    try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky([2][2]u8, a, "[[1,2],[3,]]", .{}));
     try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky([2]u8, a, "[1]", .{}));
+    try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky([3]f64, a, "[1.0,2.0]", .{}));
     try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky([2]u8, a, "[1,2,3]", .{}));
+
+    // A trailing comma is not JSON at all.
+    try testing.expectError(error.SyntaxError, json.decodeFromSliceLeaky([2]u8, a, "[1,]", .{}));
+    try testing.expectError(error.SyntaxError, json.decodeFromSliceLeaky([3]f64, a, "[1.0,2.0,]", .{}));
+    try testing.expectError(error.SyntaxError, json.decodeFromSliceLeaky([2]?u8, a, "[null,]", .{}));
+    try testing.expectError(error.SyntaxError, json.decodeFromSliceLeaky([2][2]u8, a, "[[1,2],[3,]]", .{}));
 
     // The same through a reader that hands over one byte at a time.
     var buf: [8]u8 = undefined;
-    var trickle = TrickleReader.init(&buf, "[1.0, 2.0 , ]");
+    var trickle = TrickleReader.init(&buf, "[1.0, 2.0 ]");
     try testing.expectError(error.UnexpectedToken, json.decodeLeaky([3]f64, a, &trickle.reader, .{}));
+    trickle = TrickleReader.init(&buf, "[1.0, 2.0 , ]");
+    try testing.expectError(error.SyntaxError, json.decodeLeaky([3]f64, a, &trickle.reader, .{}));
 
     // Empty arrays and the right length still decode.
     _ = try json.decodeFromSliceLeaky([0]u8, a, "[ ]", .{});
@@ -355,7 +360,8 @@ test "tuples are arrays" {
     // Also when the array ends where a number was due, whose own decoder
     // would otherwise report it as a malformed number.
     try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky(struct { u8 }, alloc, "[]", .{}));
-    try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky(struct { u8, ?u8 }, alloc, "[1,]", .{}));
+    try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky(struct { u8, ?u8 }, alloc, "[1]", .{}));
+    try testing.expectError(error.SyntaxError, json.decodeFromSliceLeaky(struct { u8, ?u8 }, alloc, "[1,]", .{}));
 
     // Empty tuples, and tuples nested in structs and slices.
     try expectEncodes(struct {}{}, "{}");
@@ -365,6 +371,10 @@ test "tuples are arrays" {
     _ = try json.decodeFromSliceLeaky(Empty, alloc, " [ ] ", .{});
     try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky(Empty, alloc, "{}", .{}));
     try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky(struct {}, alloc, "[]", .{}));
+    try expectDecodeError(Empty, error.UnexpectedToken, "[1]");
+    try expectDecodeError(Empty, error.SyntaxError, "[,]");
+    try expectDecodeError([0]u8, error.UnexpectedToken, "[1]");
+    try expectDecodeError([0]u8, error.SyntaxError, "[,]");
 
     const Pair = struct { []const u8, i32 };
     const S = struct { pairs: []const Pair };
@@ -587,7 +597,7 @@ test "unnamed values of non-exhaustive enums are integers" {
 
     // A number naming a tag is that tag, and the tag type bounds the range.
     try testing.expectEqual(E.b, try json.decodeFromSliceLeaky(E, a, "1", .{}));
-    try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky(E, a, "256", .{}));
+    try testing.expectError(error.Overflow, json.decodeFromSliceLeaky(E, a, "256", .{}));
     try testing.expectError(error.InvalidEnumTag, json.decodeFromSliceLeaky(E, a, "\"c\"", .{}));
 
     // Exhaustive enums do not take numbers.
@@ -603,7 +613,7 @@ test "unnamed values of non-exhaustive enums are integers" {
     const I = enum(i8) { _ };
     try expectEncodes(compat.enumFromInt(I, -128), "-128");
     try testing.expectEqual(compat.enumFromInt(I, -128), try json.decodeFromSliceLeaky(I, a, "-128", .{}));
-    try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky(I, a, "-129", .{}));
+    try testing.expectError(error.Overflow, json.decodeFromSliceLeaky(I, a, "-129", .{}));
     const W = enum(u128) { _ };
     const big = std.math.maxInt(u128);
     try expectEncodes(compat.enumFromInt(W, big), "340282366920938463463374607431768211455");
@@ -623,6 +633,48 @@ test "trailing data is rejected" {
     try testing.expectError(error.TrailingData, json.decodeFromSliceLeaky(u8, a, "1 junk", .{}));
     // Trailing whitespace alone is fine.
     try testing.expectEqual(@as(u8, 1), try json.decodeFromSliceLeaky(u8, a, " 1 \n ", .{}));
+}
+
+/// Expects `err` both from a slice and through a reader handing over one byte
+/// at a time.
+fn expectDecodeError(comptime T: type, err: anyerror, doc: []const u8) !void {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    try testing.expectError(err, json.decodeFromSliceLeaky(T, arena.allocator(), doc, .{}));
+    var buf: [8]u8 = undefined;
+    var trickle = TrickleReader.init(&buf, doc);
+    try testing.expectError(err, json.decodeLeaky(T, arena.allocator(), &trickle.reader, .{}));
+}
+
+test "malformed JSON is SyntaxError, the wrong kind of value is UnexpectedToken" {
+    const S = struct { a: u8 };
+    const U = union(enum) { x: u8 };
+
+    try expectDecodeError(u8, error.SyntaxError, "x");
+    try expectDecodeError(S, error.SyntaxError, "{\"a\" 1}");
+    try expectDecodeError(S, error.SyntaxError, "{\"a\":1,}");
+    try expectDecodeError(bool, error.SyntaxError, "trux");
+    try expectDecodeError(?u8, error.SyntaxError, "nulx");
+    try expectDecodeError([]const u8, error.SyntaxError, "'x'");
+    try expectDecodeError([2]u8, error.SyntaxError, "[1,2,]");
+    try expectDecodeError(U, error.SyntaxError, "{\"x\":1,}");
+
+    try expectDecodeError(u8, error.UnexpectedToken, "\"1\"");
+    try expectDecodeError(u8, error.UnexpectedToken, "null");
+    try expectDecodeError(S, error.UnexpectedToken, "[1]");
+    try expectDecodeError(bool, error.UnexpectedToken, "1");
+    try expectDecodeError([2]u8, error.UnexpectedToken, "[1,2,3]");
+    try expectDecodeError(U, error.UnexpectedToken, "{\"x\":1,\"y\":2}");
+    try expectDecodeError(U, error.UnexpectedToken, "{}");
+
+    // A literal cut short by the end of input is a truncation like any other.
+    try expectDecodeError(bool, error.UnexpectedEndOfInput, "tru");
+    try expectDecodeError(?u8, error.UnexpectedEndOfInput, "nul");
+
+    // A number's first byte that std.json would call a syntax error.
+    try expectDecodeError(f64, error.InvalidNumber, "+1");
+    try expectDecodeError(u8, error.InvalidNumber, ".5");
+    try expectDecodeError(f64, error.InvalidNumber, "e1");
 }
 
 test "a number ends before a sign that cannot belong to it, however it is buffered" {
@@ -858,7 +910,7 @@ test "skipped values must be well formed" {
         "{\"bad\":{\"a\":},\"keep\":1}",
     };
     for (bad) |doc| {
-        try testing.expectError(error.UnexpectedToken, json.decodeFromSliceLeaky(T, alloc, doc, .{}));
+        try testing.expectError(error.SyntaxError, json.decodeFromSliceLeaky(T, alloc, doc, .{}));
     }
 
     // Well-formed skips still work, including nesting and escapes.
@@ -1260,6 +1312,7 @@ test "as_tagged rejects a missing or misplaced tag" {
     // The tag has to be the first member; a streaming decoder cannot go back.
     try testing.expectError(error.MissingUnionTag, json.decodeFromSliceLeaky(ShapeTagged, alloc, "{\"radius\":2.5,\"type\":\"circle\"}", .{}));
     try testing.expectError(error.MissingUnionTag, json.decodeFromSliceLeaky(ShapeTagged, alloc, "{\"w\":1}", .{}));
+    try expectDecodeError(ShapeTagged, error.MissingUnionTag, "{}");
     try testing.expectError(error.UnknownUnionVariant, json.decodeFromSliceLeaky(ShapeTagged, alloc, "{\"type\":\"hexagon\"}", .{}));
     // A void variant carrying fields is not that variant.
     try testing.expectError(error.UnknownField, json.decodeFromSliceLeaky(ShapeTagged, alloc, "{\"type\":\"nothing\",\"x\":1}", .{}));
@@ -1305,9 +1358,9 @@ test "integers too long for the fast path do not overflow" {
     const alloc = arena.allocator();
 
     // More digits than the fast path's u64 accumulator can hold.
-    try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky(u64, alloc, "99999999999999999999", .{}));
-    try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky(i64, alloc, "-99999999999999999999", .{}));
-    try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky(u8, alloc, "123456789012345678901234567890", .{}));
+    try testing.expectError(error.Overflow, json.decodeFromSliceLeaky(u64, alloc, "99999999999999999999", .{}));
+    try testing.expectError(error.Overflow, json.decodeFromSliceLeaky(i64, alloc, "-99999999999999999999", .{}));
+    try testing.expectError(error.Overflow, json.decodeFromSliceLeaky(u8, alloc, "123456789012345678901234567890", .{}));
 
     // Wide enough destinations still decode exactly.
     try testing.expectEqual(@as(u128, 99999999999999999999), try json.decodeFromSliceLeaky(u128, alloc, "99999999999999999999", .{}));
@@ -1315,8 +1368,8 @@ test "integers too long for the fast path do not overflow" {
 
     // Reached through a struct and an array, where a terminator follows.
     const S = struct { n: u64 };
-    try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky(S, alloc, "{\"n\":99999999999999999999}", .{}));
-    try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky([]const u64, alloc, "[1,99999999999999999999]", .{}));
+    try testing.expectError(error.Overflow, json.decodeFromSliceLeaky(S, alloc, "{\"n\":99999999999999999999}", .{}));
+    try testing.expectError(error.Overflow, json.decodeFromSliceLeaky([]const u64, alloc, "[1,99999999999999999999]", .{}));
 
     // And the boundary either side of 19 digits stays exact.
     try testing.expectEqual(@as(u64, 1234567890123456789), try json.decodeFromSliceLeaky(u64, alloc, "1234567890123456789", .{}));
@@ -1473,7 +1526,7 @@ test "negative zero decodes into unsigned types" {
 
     // Signed types are unaffected, and a real negative is still rejected.
     try testing.expectEqual(@as(i32, 0), try json.decodeFromSliceLeaky(i32, alloc, "-0", .{}));
-    try testing.expectError(error.NumberOutOfRange, json.decodeFromSliceLeaky(u32, alloc, "-1", .{}));
+    try testing.expectError(error.Overflow, json.decodeFromSliceLeaky(u32, alloc, "-1", .{}));
 
     // -0.0 as a float keeps its sign bit.
     const nz = try json.decodeFromSliceLeaky(f64, alloc, "-0.0", .{});

@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Non-exhaustive enums decode from a number as well as from a tag name
 
 ### Changed
+- Decode errors follow `std.json`'s names. Input that is not well-formed JSON is now `error.SyntaxError`, and `error.UnexpectedToken` only means valid JSON of the wrong kind for the type. A number that does not fit its type is `error.Overflow` instead of `error.NumberOutOfRange`. Code that matched `error.UnexpectedToken` for malformed input has to match `error.SyntaxError` too, and `error.NumberOutOfRange` has to become `error.Overflow`. A string or `null` where a number belongs is `error.UnexpectedToken` rather than `error.InvalidNumber`
 - `decodeFromSlice`, `decodeFromSliceLeaky` and `validateFromSlice` return the new `SliceDecodeError`, which is `DecodeError` without `ReadFailed`, since a slice cannot fail to read. A `switch` on their errors that handles `error.ReadFailed` has to drop that prong
 - Tuples are encoded as JSON arrays, with every element written including nulls, and decoded from arrays of the same length. They used to be objects keyed by field index
 - A tuple is no longer accepted as the payload of an `as_tagged` union variant, since its elements have no names to hoist. It used to be flattened into members named `"0"`, `"1"` and so on

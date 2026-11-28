@@ -77,6 +77,13 @@ change.
 
 There is also `json.encodeAlloc(gpa, value)` when you just want a slice.
 
+Decode errors use `std.json`'s names wherever `std.json` has the same case.
+Input that is not well-formed JSON is `error.SyntaxError`. Valid JSON with the
+wrong kind of value for the type, such as a string where a number belongs or
+`null` for a field that is not optional, is `error.UnexpectedToken`. Only the
+first byte of such a value is looked at, so the rest of it is not checked. A
+number that does not fit its type is `error.Overflow`.
+
 ## Streaming
 
 `decodeLeaky` takes a reader, and `decode` does too:
@@ -208,7 +215,7 @@ can look shorter than it is.
 
 A value of a non-exhaustive enum with no named tag is written as its integer.
 A non-exhaustive enum decodes from either form, and a number that names a tag
-decodes to that tag. Numbers outside the tag type are `error.NumberOutOfRange`.
+decodes to that tag. Numbers outside the tag type are `error.Overflow`.
 
 Encoding a NaN or infinity as `null` matches what JavaScript's
 `JSON.stringify` does. Pass `.{ .non_finite = .fail }` to
