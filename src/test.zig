@@ -625,6 +625,43 @@ test "trailing data is rejected" {
     try testing.expectEqual(@as(u8, 1), try json.decodeFromSliceLeaky(u8, a, " 1 \n ", .{}));
 }
 
+test "a number ends before a sign that cannot belong to it, however it is buffered" {
+    const a = std.testing.allocator;
+    const opts: json.DecodeOptions = .{ .allow_trailing_data = true };
+    inline for (.{ i8, i64, f64 }) |T| {
+        // One byte per fill takes the slow scan; a whole slice the fast one.
+        {
+            var buf: [8]u8 = undefined;
+            var trickle = TrickleReader.init(&buf, "1-2");
+            try testing.expectEqual(@as(T, 1), try json.decodeLeaky(T, a, &trickle.reader, opts));
+            try testing.expectEqual(@as(T, -2), try json.decodeLeaky(T, a, &trickle.reader, opts));
+        }
+        var reader: std.Io.Reader = .fixed("1-2");
+        try testing.expectEqual(@as(T, 1), try json.decodeLeaky(T, a, &reader, opts));
+        try testing.expectEqual(@as(T, -2), try json.decodeLeaky(T, a, &reader, opts));
+        try testing.expectError(error.TrailingData, json.decodeFromSliceLeaky(T, a, "1-2", .{}));
+    }
+    // Signs in the exponent still belong to the number.
+    var buf: [8]u8 = undefined;
+    var trickle = TrickleReader.init(&buf, "1e-2 1E+2");
+    try testing.expectEqual(@as(f64, 0.01), try json.decodeLeaky(f64, a, &trickle.reader, opts));
+    try testing.expectEqual(@as(f64, 100), try json.decodeLeaky(f64, a, &trickle.reader, opts));
+}
+
+test "allow_trailing_data stops after the value" {
+    const a = std.testing.allocator;
+    const opts: json.DecodeOptions = .{ .allow_trailing_data = true };
+    try testing.expectEqual(@as(u8, 1), try json.decodeFromSliceLeaky(u8, a, "1 junk", opts));
+
+    // A stream of documents, read one decode at a time.
+    var buf: [8]u8 = undefined;
+    var trickle = TrickleReader.init(&buf, "{\"n\":1}\n{\"n\":2} [3]");
+    const N = struct { n: u8 };
+    try testing.expectEqual(@as(u8, 1), (try json.decodeLeaky(N, a, &trickle.reader, opts)).n);
+    try testing.expectEqual(@as(u8, 2), (try json.decodeLeaky(N, a, &trickle.reader, opts)).n);
+    try testing.expectEqual([1]u8{3}, try json.decodeLeaky([1]u8, a, &trickle.reader, .{}));
+}
+
 // ------------------------------------------------------------------ streaming
 
 /// Hands over one byte per fill, out of a caller-sized buffer: a value can

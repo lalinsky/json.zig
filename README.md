@@ -89,6 +89,11 @@ The reader's buffer may be far smaller than the values being decoded. Strings,
 numbers and skipped values are all consumed incrementally, so a 1 MB string
 decodes fine through a 64-byte buffer. The buffer must hold at least 8 bytes.
 
+A decode reads one document, and anything after it other than whitespace is
+`error.TrailingData`. With `.{ .allow_trailing_data = true }`, the decode stops
+after the value and leaves the reader there, so the next decode reads the next
+document. That is how a stream of documents, such as NDJSON, is read.
+
 ## Struct options
 
 By default a struct is an object keyed by field name, and optional fields that

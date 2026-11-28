@@ -149,7 +149,7 @@ pub fn decodeLeaky(
 ) DecodeError!T {
     var decoder: Decoder = .{ .reader = reader, .gpa = gpa, .options = options };
     const value = try decoder.value(T);
-    try decoder.endOfDocument();
+    if (!options.allow_trailing_data) try decoder.endOfDocument();
     return value;
 }
 
