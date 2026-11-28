@@ -18,6 +18,7 @@ pub const DecodeError = decode_mod.DecodeError;
 pub const SliceDecodeError = decode_mod.SliceDecodeError;
 pub const DecodeOptions = decode_mod.DecodeOptions;
 pub const Decoder = decode_mod.Decoder;
+pub const max_depth = decode_mod.max_depth;
 
 pub const StructOptions = struct {
     /// How struct fields map to object keys.

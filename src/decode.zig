@@ -19,7 +19,13 @@ const fieldsBranchQuota = @import("encode.zig").fieldsBranchQuota;
 
 /// What decoding from a slice can fail with.
 pub const SliceDecodeError = error{
-    /// A byte appeared where the grammar does not allow it.
+    /// The input is not well-formed JSON: a byte that cannot start a value,
+    /// a missing `:`, `,`, `]` or `}`, or a misspelled literal.
+    SyntaxError,
+    /// The input is JSON, but the value is the wrong kind for the destination
+    /// type: a string where a number belongs, `null` for a non-optional, an
+    /// array of the wrong length, and so on. When the first byte of a value
+    /// already shows its kind, the rest of it is not checked.
     UnexpectedToken,
     /// The document ended in the middle of a value.
     UnexpectedEndOfInput,
@@ -27,7 +33,7 @@ pub const SliceDecodeError = error{
     TrailingData,
     InvalidNumber,
     /// The number is well-formed but does not fit the destination type.
-    NumberOutOfRange,
+    Overflow,
     /// A number longer than `max_number_len` bytes.
     NumberTooLong,
     InvalidEscape,
@@ -246,8 +252,9 @@ fn validNumber(text: []const u8) bool {
 /// number bytes accepted, which is far past any value a f64 or i128 can hold.
 pub const max_number_len = 512;
 
-/// Guards against stack exhaustion from deeply nested input. Only reached by
-/// recursive types, since nesting depth is otherwise bounded by the Zig type.
+/// The deepest nesting of arrays and objects accepted, in a decoded value or a
+/// skipped one; deeper input fails with `error.DepthLimitExceeded`. A decoded
+/// value can only get this deep through a recursive type.
 pub const max_depth = 256;
 
 /// Options for one whole decode, as opposed to the `StructOptions` a single
@@ -345,8 +352,35 @@ pub const Decoder = struct {
     }
 
     fn expectByteSlow(d: *Decoder, comptime c: u8) DecodeError!void {
-        if (try d.peekByteSlow() != c) return error.UnexpectedToken;
+        if (try d.peekByteSlow() != c) return error.SyntaxError;
         d.reader.seek += 1;
+    }
+
+    /// `expectByte` for the byte that opens a value, where any other byte
+    /// is reported by `wrongKind`.
+    inline fn expectValueStart(d: *Decoder, comptime c: u8) DecodeError!void {
+        const r = d.reader;
+        if (r.seek < r.end and r.buffer[r.seek] == c) {
+            @branchHint(.likely);
+            r.seek += 1;
+            return;
+        }
+        return d.expectValueStartSlow(c);
+    }
+
+    fn expectValueStartSlow(d: *Decoder, comptime c: u8) DecodeError!void {
+        const b = try d.peekByteSlow();
+        if (b != c) return wrongKind(b);
+        d.reader.seek += 1;
+    }
+
+    /// `UnexpectedToken` when `c` can start a JSON value, so the input may
+    /// well be valid, and `SyntaxError` when it cannot.
+    fn wrongKind(c: u8) error{ UnexpectedToken, SyntaxError } {
+        return switch (c) {
+            '{', '[', '"', '-', '0'...'9', 't', 'f', 'n' => error.UnexpectedToken,
+            else => error.SyntaxError,
+        };
     }
 
     /// Consumes a bare literal such as `true` or `null`. Assumes leading
@@ -380,7 +414,10 @@ pub const Decoder = struct {
 
     fn expectLiteralSlow(d: *Decoder, comptime lit: []const u8) DecodeError!bool {
         const window = d.reader.peek(lit.len) catch |err| switch (err) {
-            error.EndOfStream => return false,
+            error.EndOfStream => {
+                if (std.mem.startsWith(u8, lit, d.reader.buffered())) return error.UnexpectedEndOfInput;
+                return false;
+            },
             error.ReadFailed => return error.ReadFailed,
         };
         if (!std.mem.eql(u8, window[0..lit.len], lit)) return false;
@@ -410,8 +447,9 @@ pub const Decoder = struct {
 
         switch (@typeInfo(T)) {
             .void => {
-                _ = try d.peekByte();
-                if (!try d.expectLiteral("null")) return error.UnexpectedToken;
+                const c = try d.peekByte();
+                if (c != 'n') return wrongKind(c);
+                if (!try d.expectLiteral("null")) return error.SyntaxError;
                 return {};
             },
             .bool => return d.boolean(),
@@ -419,7 +457,7 @@ pub const Decoder = struct {
             .float => return d.float(T),
             .optional => |o| {
                 if (try d.peekByte() == 'n') {
-                    if (!try d.expectLiteral("null")) return error.UnexpectedToken;
+                    if (!try d.expectLiteral("null")) return error.SyntaxError;
                     return null;
                 }
                 return try d.value(o.child);
@@ -458,14 +496,14 @@ pub const Decoder = struct {
     fn boolean(d: *Decoder) DecodeError!bool {
         switch (try d.peekByte()) {
             't' => {
-                if (!try d.expectLiteral("true")) return error.UnexpectedToken;
+                if (!try d.expectLiteral("true")) return error.SyntaxError;
                 return true;
             },
             'f' => {
-                if (!try d.expectLiteral("false")) return error.UnexpectedToken;
+                if (!try d.expectLiteral("false")) return error.SyntaxError;
                 return false;
             },
-            else => return error.UnexpectedToken,
+            else => |c| return wrongKind(c),
         }
     }
 
@@ -476,13 +514,16 @@ pub const Decoder = struct {
     /// valid until the next read, which is enough because every caller parses
     /// it immediately and reads nothing in between.
     fn numberSpan(d: *Decoder, buf: []u8) DecodeError![]const u8 {
-        _ = try d.peekByte();
+        // Past this check the span is never empty.
+        switch (try d.peekByte()) {
+            '0'...'9', '-', '+', '.', 'e', 'E' => {},
+            else => |c| return wrongKind(c),
+        }
 
         const r = d.reader;
         const window = r.buffer[r.seek..r.end];
         if (numberEnd(window, 0)) |end| {
             @branchHint(.likely);
-            if (end == 0) return error.InvalidNumber;
             r.seek += end;
             return window[0..end];
         }
@@ -495,15 +536,9 @@ pub const Decoder = struct {
             @memcpy(buf[len..][0..scanned], chunk[0..scanned]);
             len += scanned;
             d.reader.toss(scanned);
-            if (scanned < chunk.len) {
-                if (len == 0) return error.InvalidNumber;
-                return buf[0..len];
-            }
+            if (scanned < chunk.len) return buf[0..len];
             d.reader.fillMore() catch |err| switch (err) {
-                error.EndOfStream => {
-                    if (len == 0) return error.UnexpectedEndOfInput;
-                    return buf[0..len];
-                },
+                error.EndOfStream => return buf[0..len],
                 error.ReadFailed => return error.ReadFailed,
             };
         }
@@ -569,11 +604,11 @@ pub const Decoder = struct {
                         // -0 is a valid JSON spelling of zero and fits any
                         // unsigned type; only a real negative does not.
                         if (acc == 0) return 0;
-                        return error.NumberOutOfRange;
+                        return error.Overflow;
                     }
-                    return std.math.cast(T, -@as(i64, @intCast(acc))) orelse error.NumberOutOfRange;
+                    return std.math.cast(T, -@as(i64, @intCast(acc))) orelse error.Overflow;
                 }
-                return std.math.cast(T, acc) orelse error.NumberOutOfRange;
+                return std.math.cast(T, acc) orelse error.Overflow;
             }
         }
 
@@ -604,19 +639,19 @@ pub const Decoder = struct {
 
         if (ndigits >= 20) {
             return std.fmt.parseInt(T, text, 10) catch |err| switch (err) {
-                error.Overflow => error.NumberOutOfRange,
+                error.Overflow => error.Overflow,
                 error.InvalidCharacter => error.InvalidNumber,
             };
         }
         if (neg) {
             if (@typeInfo(T).int.signedness == .unsigned) {
                 if (acc == 0) return 0;
-                return error.NumberOutOfRange;
+                return error.Overflow;
             }
             const signed = -@as(i128, acc);
-            return std.math.cast(T, signed) orelse error.NumberOutOfRange;
+            return std.math.cast(T, signed) orelse error.Overflow;
         }
-        return std.math.cast(T, acc) orelse error.NumberOutOfRange;
+        return std.math.cast(T, acc) orelse error.Overflow;
     }
 
     fn float(d: *Decoder, comptime T: type) DecodeError!T {
@@ -721,7 +756,7 @@ pub const Decoder = struct {
     /// Decodes a string into memory of its own. With a sentinel, it is
     /// appended past the end, as for any `[:s]u8`.
     fn string(d: *Decoder, comptime sentinel: ?u8) DecodeError!String(sentinel) {
-        try d.expectByte('"');
+        try d.expectValueStart('"');
 
         // Fast path: the closing quote is already buffered and there are no
         // escapes, so the length is known and one exact-size allocation does
@@ -849,7 +884,7 @@ pub const Decoder = struct {
     // ------------------------------------------------------------ compound
 
     fn slice(d: *Decoder, comptime S: type, comptime Child: type, comptime sentinel: ?Child) DecodeError!S {
-        try d.expectByte('[');
+        try d.expectValueStart('[');
         try d.pushDepth();
         defer d.depth -= 1;
 
@@ -873,7 +908,7 @@ pub const Decoder = struct {
                     d.advance(1);
                     break;
                 },
-                else => return error.UnexpectedToken,
+                else => return error.SyntaxError,
             }
         }
         if (sentinel) |s| return list.toOwnedSliceSentinel(d.gpa, s);
@@ -895,22 +930,22 @@ pub const Decoder = struct {
     }
 
     fn fixedArray(d: *Decoder, comptime T: type, comptime Child: type, comptime n: usize) DecodeError!T {
-        try d.expectByte('[');
+        try d.expectValueStart('[');
         try d.pushDepth();
         defer d.depth -= 1;
 
         var result: T = undefined;
         inline for (0..n) |i| {
-            if (i != 0) {
-                if (try d.peekByte() != ',') return error.UnexpectedToken;
-                d.advance(1);
-            }
             // An array that ends early is a length error, not something for
             // the element's own decoder to misreport, e.g. as a bad number.
-            if (try d.peekByte() == ']') return error.UnexpectedToken;
+            switch (try d.peekByte()) {
+                ']' => return error.UnexpectedToken,
+                ',' => if (i != 0) d.advance(1) else return error.SyntaxError,
+                else => if (i != 0) return error.SyntaxError,
+            }
             result[i] = try d.value(Child);
         }
-        try d.expectByte(']');
+        try d.arrayEnd(n == 0);
         if (comptime @typeInfo(T).array.sentinel()) |s| result[n] = s;
         return result;
     }
@@ -918,23 +953,37 @@ pub const Decoder = struct {
     /// A tuple is read from an array with exactly one element per field.
     fn tuple(d: *Decoder, comptime T: type) DecodeError!T {
         @setEvalBranchQuota(comptime fieldsBranchQuota(T));
-        try d.expectByte('[');
+        try d.expectValueStart('[');
         try d.pushDepth();
         defer d.depth -= 1;
 
         var result: T = undefined;
         inline for (comptime compat.structFields(T), 0..) |f, i| {
-            if (i != 0) {
-                if (try d.peekByte() != ',') return error.UnexpectedToken;
-                d.advance(1);
-            }
             // An array that ends early is a length error, not something for
             // the element's own decoder to misreport, e.g. as a bad number.
-            if (try d.peekByte() == ']') return error.UnexpectedToken;
+            switch (try d.peekByte()) {
+                ']' => return error.UnexpectedToken,
+                ',' => if (i != 0) d.advance(1) else return error.SyntaxError,
+                else => if (i != 0) return error.SyntaxError,
+            }
             @field(result, f.name) = try d.value(f.type);
         }
-        try d.expectByte(']');
+        try d.arrayEnd(comptime compat.structFields(T).len == 0);
         return result;
+    }
+
+    /// The `]` closing a fixed-length array, where another element means the
+    /// array is longer than the type. `empty` says no element came before.
+    fn arrayEnd(d: *Decoder, comptime empty: bool) DecodeError!void {
+        switch (try d.peekByte()) {
+            ']' => d.advance(1),
+            ',' => {
+                if (empty) return error.SyntaxError;
+                d.advance(1);
+                return wrongKind(try d.peekByte());
+            },
+            else => |c| return if (empty) wrongKind(c) else error.SyntaxError,
+        }
     }
 
     fn enumValue(d: *Decoder, comptime T: type) DecodeError!T {
@@ -947,7 +996,8 @@ pub const Decoder = struct {
             }
         }
         var buf: [maxTagLen(T)]u8 = undefined;
-        const name = (try d.boundedString(&buf)) orelse return error.InvalidEnumTag;
+        try d.expectValueStart('"');
+        const name = (try d.boundedStringBody(&buf)) orelse return error.InvalidEnumTag;
         inline for (comptime std.meta.fieldNames(T)) |tag_name| {
             if (name.len == tag_name.len and std.mem.eql(u8, name, tag_name)) {
                 return @field(T, tag_name);
@@ -961,12 +1011,13 @@ pub const Decoder = struct {
         const info = @typeInfo(T).@"union";
         if (info.tag_type == null) @compileError("json: cannot decode untagged union " ++ @typeName(T));
 
-        try d.expectByte('{');
+        try d.expectValueStart('{');
         try d.pushDepth();
         defer d.depth -= 1;
 
         switch (comptime json.unionFormat(T)) {
             .as_object => {
+                if (try d.peekByte() == '}') return error.UnexpectedToken;
                 var buf: [maxTagLen(T)]u8 = undefined;
                 const name = (try d.boundedString(&buf)) orelse return error.UnknownUnionVariant;
                 try d.expectByte(':');
@@ -980,18 +1031,28 @@ pub const Decoder = struct {
                 // Report the unknown variant before looking for `}`; nothing
                 // consumed the value, so the object is not where `}` would be.
                 if (result == null) return error.UnknownUnionVariant;
-                try d.expectByte('}');
+                switch (try d.peekByte()) {
+                    '}' => d.advance(1),
+                    ',' => {
+                        d.advance(1);
+                        if (try d.peekByte() == '"') return error.UnexpectedToken;
+                        return error.SyntaxError;
+                    },
+                    else => return error.SyntaxError,
+                }
                 return result.?;
             },
             .as_tagged => |tagged| {
                 // The tag has to come first; see `UnionFormat.as_tagged`.
+                if (try d.peekByte() == '}') return error.MissingUnionTag;
                 var key_buf: [tagged.tag_field.len]u8 = undefined;
                 const key = (try d.boundedString(&key_buf)) orelse return error.MissingUnionTag;
                 if (!std.mem.eql(u8, key, tagged.tag_field)) return error.MissingUnionTag;
                 try d.expectByte(':');
 
                 var name_buf: [maxTagLen(T)]u8 = undefined;
-                const name = (try d.boundedString(&name_buf)) orelse return error.UnknownUnionVariant;
+                try d.expectValueStart('"');
+                const name = (try d.boundedStringBody(&name_buf)) orelse return error.UnknownUnionVariant;
 
                 var result: ?T = null;
                 inline for (comptime compat.unionFields(T)) |f| {
@@ -1030,7 +1091,7 @@ pub const Decoder = struct {
     }
 
     fn object(d: *Decoder, comptime T: type) DecodeError!T {
-        try d.expectByte('{');
+        try d.expectValueStart('{');
         try d.pushDepth();
         defer d.depth -= 1;
         return d.objectMembers(T, comptime json.structOptions(T), false);
@@ -1063,7 +1124,7 @@ pub const Decoder = struct {
                 d.advance(1);
                 break :blk false;
             },
-            else => return error.UnexpectedToken,
+            else => return error.SyntaxError,
         } else blk: {
             if (try d.peekByte() == '}') {
                 d.advance(1);
@@ -1130,7 +1191,7 @@ pub const Decoder = struct {
                         d.advance(1);
                         break;
                     },
-                    else => return error.UnexpectedToken,
+                    else => return error.SyntaxError,
                 }
             }
         }
@@ -1154,7 +1215,11 @@ pub const Decoder = struct {
     /// consumed it either way, so no allocation is involved on any path.
     fn boundedString(d: *Decoder, buf: []u8) DecodeError!?[]const u8 {
         try d.expectByte('"');
+        return d.boundedStringBody(buf);
+    }
 
+    /// `boundedString` after its opening quote.
+    fn boundedStringBody(d: *Decoder, buf: []u8) DecodeError!?[]const u8 {
         // Fast path: the whole key is buffered and unescaped.
         {
             const r = d.reader;
@@ -1230,18 +1295,17 @@ pub const Decoder = struct {
     /// subtree has to be well-formed JSON, so `{"x":[}]` is rejected instead of
     /// being waved through because the bracket counter happened to balance.
     pub fn skipValue(d: *Decoder) DecodeError!void {
-        try d.pushDepth();
-        defer d.depth -= 1;
-
         switch (try d.peekByte()) {
             '{' => {
+                try d.pushDepth();
+                defer d.depth -= 1;
                 d.advance(1);
                 if (try d.peekByte() == '}') {
                     d.advance(1);
                     return;
                 }
                 while (true) {
-                    if (try d.peekByte() != '"') return error.UnexpectedToken;
+                    if (try d.peekByte() != '"') return error.SyntaxError;
                     d.advance(1);
                     try d.stringBody(null);
                     try d.expectByte(':');
@@ -1252,11 +1316,13 @@ pub const Decoder = struct {
                             d.advance(1);
                             return;
                         },
-                        else => return error.UnexpectedToken,
+                        else => return error.SyntaxError,
                     }
                 }
             },
             '[' => {
+                try d.pushDepth();
+                defer d.depth -= 1;
                 d.advance(1);
                 if (try d.peekByte() == ']') {
                     d.advance(1);
@@ -1270,7 +1336,7 @@ pub const Decoder = struct {
                             d.advance(1);
                             return;
                         },
-                        else => return error.UnexpectedToken,
+                        else => return error.SyntaxError,
                     }
                 }
             },
@@ -1282,7 +1348,7 @@ pub const Decoder = struct {
             'f' => try d.expectLiteralOrFail("false"),
             'n' => try d.expectLiteralOrFail("null"),
             '-', '0'...'9' => try d.skipNumber(),
-            else => return error.UnexpectedToken,
+            else => return error.SyntaxError,
         }
     }
 
@@ -1295,7 +1361,7 @@ pub const Decoder = struct {
     }
 
     fn expectLiteralOrFail(d: *Decoder, comptime lit: []const u8) DecodeError!void {
-        if (!try d.expectLiteral(lit)) return error.UnexpectedToken;
+        if (!try d.expectLiteral(lit)) return error.SyntaxError;
     }
 
     fn pushDepth(d: *Decoder) DecodeError!void {
