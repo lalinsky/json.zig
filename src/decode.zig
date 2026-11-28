@@ -252,8 +252,9 @@ fn validNumber(text: []const u8) bool {
 /// number bytes accepted, which is far past any value a f64 or i128 can hold.
 pub const max_number_len = 512;
 
-/// Guards against stack exhaustion from deeply nested input. Only reached by
-/// recursive types, since nesting depth is otherwise bounded by the Zig type.
+/// The deepest nesting of arrays and objects accepted, in a decoded value or a
+/// skipped one; deeper input fails with `error.DepthLimitExceeded`. A decoded
+/// value can only get this deep through a recursive type.
 pub const max_depth = 256;
 
 /// Options for one whole decode, as opposed to the `StructOptions` a single
@@ -1294,11 +1295,10 @@ pub const Decoder = struct {
     /// subtree has to be well-formed JSON, so `{"x":[}]` is rejected instead of
     /// being waved through because the bracket counter happened to balance.
     pub fn skipValue(d: *Decoder) DecodeError!void {
-        try d.pushDepth();
-        defer d.depth -= 1;
-
         switch (try d.peekByte()) {
             '{' => {
+                try d.pushDepth();
+                defer d.depth -= 1;
                 d.advance(1);
                 if (try d.peekByte() == '}') {
                     d.advance(1);
@@ -1321,6 +1321,8 @@ pub const Decoder = struct {
                 }
             },
             '[' => {
+                try d.pushDepth();
+                defer d.depth -= 1;
                 d.advance(1);
                 if (try d.peekByte() == ']') {
                     d.advance(1);

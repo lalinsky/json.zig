@@ -1564,3 +1564,28 @@ test "a repeated field is an error" {
     const n = try json.decodeFromSliceLeaky(Nested, alloc, "{\"inner\":{\"a\":1,\"b\":2},\"other\":{\"a\":3,\"b\":4}}", .{});
     try testing.expectEqual(@as(u8, 3), n.other.a);
 }
+
+test "max_depth counts containers, also when skipped" {
+    const a = std.testing.allocator;
+    var buf: [2 * (json.max_depth + 1) + 16]u8 = undefined;
+    for ([_]usize{ json.max_depth, json.max_depth + 1 }) |levels| {
+        // `levels` nested containers, the innermost holding a scalar.
+        var w: std.Io.Writer = .fixed(&buf);
+        try w.writeAll("{\"x\":");
+        for (0..levels - 1) |_| try w.writeByte('[');
+        try w.writeAll("null");
+        for (0..levels - 1) |_| try w.writeByte(']');
+        try w.writeByte('}');
+        const doc = w.buffered();
+
+        const validated = json.validateFromSlice(doc);
+        const skipped = json.decodeFromSliceLeaky(struct {}, a, doc, .{ .skip_unknown_fields = true });
+        if (levels <= json.max_depth) {
+            try validated;
+            _ = try skipped;
+        } else {
+            try testing.expectError(error.DepthLimitExceeded, validated);
+            try testing.expectError(error.DepthLimitExceeded, skipped);
+        }
+    }
+}
