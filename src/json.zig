@@ -15,6 +15,7 @@ pub const EncodeError = encode_mod.EncodeError;
 pub const Encoder = encode_mod.Encoder;
 
 pub const DecodeError = decode_mod.DecodeError;
+pub const SliceDecodeError = decode_mod.SliceDecodeError;
 pub const DecodeOptions = decode_mod.DecodeOptions;
 pub const Decoder = decode_mod.Decoder;
 
@@ -121,7 +122,7 @@ pub fn decode(
     gpa: std.mem.Allocator,
     reader: *std.Io.Reader,
     options: DecodeOptions,
-) (DecodeError || std.mem.Allocator.Error)!Decoded(T) {
+) DecodeError!Decoded(T) {
     var parsed: Decoded(T) = .{
         .arena = try gpa.create(std.heap.ArenaAllocator),
         .value = undefined,
@@ -162,9 +163,17 @@ pub fn validate(reader: *std.Io.Reader) DecodeError!void {
     try decoder.endOfDocument();
 }
 
-pub fn validateFromSlice(bytes: []const u8) DecodeError!void {
+pub fn validateFromSlice(bytes: []const u8) SliceDecodeError!void {
     var reader: std.Io.Reader = .fixed(bytes);
-    return validate(&reader);
+    return validate(&reader) catch |err| return sliceError(err);
+}
+
+/// A reader over a slice cannot fail.
+fn sliceError(err: DecodeError) SliceDecodeError {
+    return switch (err) {
+        error.ReadFailed => unreachable,
+        else => |e| e,
+    };
 }
 
 /// Validation never keeps anything, so it never needs to allocate. Handing it
@@ -188,9 +197,9 @@ pub fn decodeFromSlice(
     gpa: std.mem.Allocator,
     bytes: []const u8,
     options: DecodeOptions,
-) (DecodeError || std.mem.Allocator.Error)!Decoded(T) {
+) SliceDecodeError!Decoded(T) {
     var reader: std.Io.Reader = .fixed(bytes);
-    return decode(T, gpa, &reader, options);
+    return decode(T, gpa, &reader, options) catch |err| return sliceError(err);
 }
 
 pub fn decodeFromSliceLeaky(
@@ -198,9 +207,9 @@ pub fn decodeFromSliceLeaky(
     gpa: std.mem.Allocator,
     bytes: []const u8,
     options: DecodeOptions,
-) DecodeError!T {
+) SliceDecodeError!T {
     var reader: std.Io.Reader = .fixed(bytes);
-    return decodeLeaky(T, gpa, &reader, options);
+    return decodeLeaky(T, gpa, &reader, options) catch |err| return sliceError(err);
 }
 
 test {
